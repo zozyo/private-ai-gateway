@@ -169,6 +169,10 @@ def build_upstream_config(
             "chutes_chute_ids",
             "chutes_e2ee_discovery_rounds",
             "chutes_e2ee_discovery_interval_seconds",
+            "privatemode_manifest_path",
+            "privatemode_manifest_sha256",
+            "privatemode_proxy_binary_path",
+            "privatemode_proxy_binary_sha256",
         ):
             value = getattr(provider, field)
             if value is not None and value != {}:

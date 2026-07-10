@@ -13,6 +13,7 @@ One directory per upstream provider. Each holds up to two documents:
 | Chutes | Intel TDX + NVIDIA CC | `e2ee_public_key_sha256` | [verification](chutes/verification.md) | [review](chutes/review.md) |
 | NEAR AI | Intel TDX + NVIDIA CC | `tls_spki_sha256` | [verification](near-ai/verification.md) | [review](near-ai/review.md) |
 | Tinfoil | AMD SEV-SNP (or TDX) + NVIDIA CC | `tls_spki_sha256` | [verification](tinfoil/verification.md) | [review](tinfoil/review.md) |
+| Privatemode | AMD SEV-SNP or Intel TDX + NVIDIA CC | `manifest_sha256` | [verification](privatemode/verification.md) | [review](privatemode/review.md) |
 | AciService (first-party) | Intel TDX + NVIDIA CC | `tls_spki_sha256` | [verification](aci-service/verification.md) | — (first-party) |
 | PhalaDirect | Intel TDX + NVIDIA CC | `tls_spki_sha256` | [verification](phala-direct/verification.md) | [review](phala-direct/review.md) |
 | SecretAI | AMD SEV-SNP + NVIDIA CC | — (adapter deferred) | — | [review](secret-ai/review.md) |
@@ -30,18 +31,23 @@ merged. The framework and cross-cutting reviews:
 
 ## The shared verification model
 
-**A session binding is only trustworthy if it is bound into a verified attestation.**
-Every provider produces exactly one kind of binding, and in every case the bound value
-lives inside (or is digested into) the quote/report whose signature is verified. Each
-`verification.md` states plainly *what is bound* and *what a tamper rejects*.
+**A session binding is only trustworthy if it is bound into a verified attestation or
+an attestation-gated key-release protocol.** Every provider produces exactly one kind
+of binding. The bound value either lives inside the signed quote/report or identifies
+the attested policy that gates the provider's encryption secret. Each `verification.md`
+states plainly *what is bound* and *what a tamper rejects*.
 
-The two binding types:
+The binding types:
 
 - **`tls_spki_sha256`** — SHA-256 fingerprint of the upstream's TLS public key; the
   backend enforces it against the actual upstream HTTPS connection before forwarding.
 - **`e2ee_public_key_sha256`** — SHA-256 of the upstream's end-to-end public key; the
   backend encrypts the request body to that key, so only the attested enclave can
   decrypt.
+- **`manifest_sha256`** — SHA-256 of an attestation manifest plus its Coordinator
+  policy hash, the exact proxy-binary digest, and the supervised child's ephemeral
+  TLS-certificate digest. The gateway launches that generation from sealed memory
+  files and routes only over its pinned loopback TLS channel.
 
 ### Invariant: verified ⟹ enforceable binding
 

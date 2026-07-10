@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::aci::canonical;
 use crate::aci::receipt::{UpstreamVerifiedEvent, VerificationResult};
-use crate::aci::upstream::{ChutesSessionStore, UpstreamBackend, UpstreamError};
+use crate::aci::upstream::{
+    ChutesSessionStore, PrivatemodeProxySupervisor, UpstreamBackend, UpstreamError,
+};
 use crate::aggregator::service::{UpstreamVerificationRequest, UpstreamVerifier};
 
 mod builders;
@@ -23,6 +25,8 @@ mod tests;
 mod validation;
 
 pub use validation::parse_config_text;
+
+pub const PRIVATEMODE_SUPERVISED_BASE_URL: &str = "supervised://privatemode-proxy";
 
 use builders::{build_chutes_provider_backend, build_state};
 use dynamic::{DynamicUpstreamBackend, DynamicUpstreamVerifier};
@@ -78,6 +82,20 @@ pub struct UpstreamConfig {
     pub chutes_e2ee_discovery_rounds: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chutes_e2ee_discovery_interval_seconds: Option<u64>,
+    /// Reviewed manifest copied by the gateway into a sealed memory file and
+    /// passed to its supervised `privatemode-proxy` child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privatemode_manifest_path: Option<String>,
+    /// Operator-reviewed SHA-256 of `privatemode_manifest_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privatemode_manifest_sha256: Option<String>,
+    /// Path to the reviewed official `privatemode-proxy` executable. The
+    /// gateway verifies it and executes a sealed in-memory copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privatemode_proxy_binary_path: Option<String>,
+    /// Operator-reviewed SHA-256 of `privatemode_proxy_binary_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privatemode_proxy_binary_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -117,6 +135,14 @@ pub struct PublicUpstreamConfig {
     pub chutes_e2ee_discovery_rounds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chutes_e2ee_discovery_interval_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privatemode_manifest_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privatemode_manifest_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privatemode_proxy_binary_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privatemode_proxy_binary_sha256: Option<String>,
 }
 
 impl UpstreamConfig {
@@ -142,6 +168,10 @@ impl UpstreamConfig {
             chutes_chute_ids: self.chutes_chute_ids.clone(),
             chutes_e2ee_discovery_rounds: self.chutes_e2ee_discovery_rounds,
             chutes_e2ee_discovery_interval_seconds: self.chutes_e2ee_discovery_interval_seconds,
+            privatemode_manifest_path: self.privatemode_manifest_path.clone(),
+            privatemode_manifest_sha256: self.privatemode_manifest_sha256.clone(),
+            privatemode_proxy_binary_path: self.privatemode_proxy_binary_path.clone(),
+            privatemode_proxy_binary_sha256: self.privatemode_proxy_binary_sha256.clone(),
         }
     }
 }
@@ -159,6 +189,7 @@ pub enum UpstreamProvider {
     Chutes,
     Tinfoil,
     NearAi,
+    Privatemode,
     PhalaDirect,
 }
 
@@ -167,7 +198,9 @@ impl UpstreamProvider {
     /// must choose its scope rather than inherit a default.
     pub(crate) fn attestation_scope(self) -> AttestationScope {
         match self {
-            UpstreamProvider::NearAi | UpstreamProvider::Tinfoil => AttestationScope::PerRouter,
+            UpstreamProvider::NearAi
+            | UpstreamProvider::Tinfoil
+            | UpstreamProvider::Privatemode => AttestationScope::PerRouter,
             UpstreamProvider::Chutes => AttestationScope::PerInstance,
             UpstreamProvider::PhalaDirect => AttestationScope::PerModel,
             // Plain cloud APIs (OpenAI-compatible, Anthropic) have no verifier
@@ -640,19 +673,68 @@ impl UpstreamConfigManager {
 #[derive(Default)]
 struct ProviderSessionRegistry {
     chutes: HashMap<String, Arc<ChutesSessionStore>>,
+    privatemode: HashMap<String, Arc<PrivatemodeProxySupervisor>>,
 }
 
 impl ProviderSessionRegistry {
-    fn new(config: &[UpstreamConfig]) -> Self {
+    fn new(
+        config: &[UpstreamConfig],
+        options: &UpstreamRuntimeOptions,
+    ) -> Result<Self, UpstreamConfigError> {
         let chutes = config
             .iter()
             .filter(|cfg| cfg.provider == UpstreamProvider::Chutes)
             .map(|cfg| (cfg.name.clone(), Arc::new(ChutesSessionStore::new())))
             .collect();
-        Self { chutes }
+        let mut privatemode = HashMap::new();
+        for cfg in config
+            .iter()
+            .filter(|cfg| cfg.provider == UpstreamProvider::Privatemode)
+        {
+            let field = |name: &str, value: &Option<String>| {
+                value.clone().ok_or_else(|| {
+                    UpstreamConfigError::InvalidConfig(format!(
+                        "Privatemode upstream {:?} is missing {name}",
+                        cfg.name
+                    ))
+                })
+            };
+            let supervisor = PrivatemodeProxySupervisor::new(
+                field(
+                    "privatemode_proxy_binary_path",
+                    &cfg.privatemode_proxy_binary_path,
+                )?,
+                field(
+                    "privatemode_proxy_binary_sha256",
+                    &cfg.privatemode_proxy_binary_sha256,
+                )?,
+                field("privatemode_manifest_path", &cfg.privatemode_manifest_path)?,
+                field(
+                    "privatemode_manifest_sha256",
+                    &cfg.privatemode_manifest_sha256,
+                )?,
+                field("bearer_token", &cfg.bearer_token)?,
+                cfg.connect_timeout_seconds
+                    .unwrap_or(options.connect_timeout_seconds),
+                cfg.read_timeout_seconds
+                    .unwrap_or(options.read_timeout_seconds),
+                cfg.verifier_request_timeout_seconds
+                    .unwrap_or(options.verifier_request_timeout_seconds),
+            )
+            .map_err(|e| UpstreamConfigError::InvalidConfig(e.to_string()))?;
+            privatemode.insert(cfg.name.clone(), Arc::new(supervisor));
+        }
+        Ok(Self {
+            chutes,
+            privatemode,
+        })
     }
 
     fn chutes(&self, upstream_name: &str) -> Option<Arc<ChutesSessionStore>> {
         self.chutes.get(upstream_name).cloned()
+    }
+
+    fn privatemode(&self, upstream_name: &str) -> Option<Arc<PrivatemodeProxySupervisor>> {
+        self.privatemode.get(upstream_name).cloned()
     }
 }

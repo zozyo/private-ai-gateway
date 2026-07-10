@@ -11,12 +11,12 @@ use super::{
 use crate::aci::canonical;
 use crate::aci::upstream::{
     ChutesProviderBackend, ChutesSessionStore, ModelRoute, ModelRouterBackend,
-    OpenAICompatibleBackend, UpstreamBackend,
+    OpenAICompatibleBackend, PrivatemodeProviderBackend, UpstreamBackend,
 };
 use crate::aci::verifier::{
     AciServiceUpstreamVerifier, AciServiceVerifierPolicy, ChutesProviderVerifier,
     NearAiProviderVerifier, PhalaDirectProviderVerifier, PreverifiedUpstreamVerifier,
-    RoutingUpstreamVerifier, TinfoilProviderVerifier,
+    PrivatemodeProviderVerifier, RoutingUpstreamVerifier, TinfoilProviderVerifier,
 };
 use crate::aggregator::service::UpstreamVerifier;
 
@@ -25,7 +25,7 @@ pub(super) fn build_state(
     options: &UpstreamRuntimeOptions,
 ) -> Result<ConfiguredUpstreams, UpstreamConfigError> {
     validate_config(config)?;
-    let sessions = Arc::new(ProviderSessionRegistry::new(config));
+    let sessions = Arc::new(ProviderSessionRegistry::new(config, options)?);
     let backend: Arc<dyn UpstreamBackend> = if config.is_empty() {
         Arc::new(EmptyUpstreamBackend)
     } else {
@@ -78,6 +78,7 @@ fn provider_is_tee(provider: UpstreamProvider) -> bool {
         | UpstreamProvider::Chutes
         | UpstreamProvider::Tinfoil
         | UpstreamProvider::NearAi
+        | UpstreamProvider::Privatemode
         | UpstreamProvider::PhalaDirect => true,
     }
 }
@@ -106,6 +107,22 @@ fn build_provider_backend(
                 options,
                 session_store,
             )?))
+        }
+        UpstreamProvider::Privatemode => {
+            let supervisor = sessions.privatemode(&cfg.name).ok_or_else(|| {
+                UpstreamConfigError::InvalidConfig(format!(
+                    "missing supervised Privatemode proxy for upstream {:?}",
+                    cfg.name
+                ))
+            })?;
+            let backend = PrivatemodeProviderBackend::new_with_timeouts(
+                supervisor,
+                connect_timeout_seconds,
+                read_timeout_seconds,
+            )
+            .map_err(|e| UpstreamConfigError::InvalidConfig(e.to_string()))?
+            .with_name(cfg.name.clone());
+            Ok(Arc::new(backend))
         }
         UpstreamProvider::OpenAiCompatible
         | UpstreamProvider::Anthropic
@@ -250,6 +267,15 @@ fn build_provider_verifier(
                 request_timeout_seconds,
                 cache_seconds,
             ))),
+            UpstreamProvider::Privatemode => {
+                let supervisor = sessions.privatemode(&cfg.name).ok_or_else(|| {
+                    UpstreamConfigError::InvalidConfig(format!(
+                        "missing supervised Privatemode proxy for upstream {:?}",
+                        cfg.name
+                    ))
+                })?;
+                Some(Arc::new(PrivatemodeProviderVerifier::new(supervisor)))
+            }
             UpstreamProvider::PhalaDirect => {
                 let mut verifier = PhalaDirectProviderVerifier::new_with_cache(
                     request_timeout_seconds,
@@ -262,12 +288,16 @@ fn build_provider_verifier(
             }
         };
         if let Some(verifier) = verifier {
-            router = router
-                .add_origin(
-                    cfg.base_url.trim_end_matches('/').to_string(),
-                    verifier.clone(),
-                )
-                .add_name(cfg.name.clone(), verifier);
+            router = router.add_name(cfg.name.clone(), verifier.clone());
+            // Every Privatemode entry uses the same non-network logical base
+            // URL. Routing it by that value would make the last configured
+            // entry steal prewarming for every earlier entry. Runtime events
+            // use the supervisor's unique pinned loopback TLS origin and all
+            // Privatemode verification is therefore selected by route name.
+            if cfg.provider != UpstreamProvider::Privatemode {
+                router =
+                    router.add_origin(cfg.base_url.trim_end_matches('/').to_string(), verifier);
+            }
         }
     }
     Ok(Some(Arc::new(router)))

@@ -25,6 +25,7 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Nonce,
 };
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+use futures_util::StreamExt;
 use ml_kem::{
     kem::{Decapsulate, Encapsulate, Kem, KeyExport, TryKeyInit},
     ml_kem_768::{
@@ -39,11 +40,13 @@ use private_ai_gateway::aci::receipt::{
 };
 use private_ai_gateway::aci::upstream::{
     ChutesProviderBackend, ChutesSessionStore, ChutesVerifiedDiscovery, ChutesVerifiedInstance,
-    OpenAICompatibleBackend, UpstreamRequest,
+    OpenAICompatibleBackend, PrivatemodeProviderBackend, PrivatemodeProxySupervisor,
+    UpstreamBackend, UpstreamRequest,
 };
-use private_ai_gateway::aci::verifier::StaticUpstreamVerifier;
+use private_ai_gateway::aci::verifier::{PrivatemodeProviderVerifier, StaticUpstreamVerifier};
 use private_ai_gateway::aggregator::service::{
-    AciService, AciServiceConfig, FixedClock, InMemoryReceiptStore,
+    AciService, AciServiceConfig, FixedClock, InMemoryReceiptStore, UpstreamVerificationRequest,
+    UpstreamVerifier,
 };
 use private_ai_gateway::aggregator::upstream_config::{
     UpstreamConfig, UpstreamConfigManager, UpstreamProvider, UpstreamRuntimeOptions,
@@ -70,6 +73,72 @@ const STREAM_CHAT_REQUEST: &[u8] =
     br#"{"model":"provider-model","stream":true,"messages":[{"role":"user","content":"hello"}]}"#;
 const STREAM_CHAT_RESPONSE_EVENT: &[u8] =
     br#"data: {"id":"chat-provider-1","object":"chat.completion.chunk","model":"provider-model","choices":[{"index":0,"delta":{"role":"assistant","content":"world"},"finish_reason":null}]}"#;
+const FAKE_PRIVATEMODE_PROXY: &[u8] = br###"#!/usr/bin/python3
+import argparse
+import json
+import os
+import ssl
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+if "provider-secret" in sys.argv:
+    raise SystemExit("API key leaked through argv")
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--manifestPath", required=True)
+parser.add_argument("--tlsCertPath", required=True)
+parser.add_argument("--tlsKeyPath", required=True)
+parser.add_argument("--port", required=True, type=int)
+parser.add_argument("--workspace", required=True)
+args = parser.parse_args()
+with open(args.manifestPath, "rb") as manifest:
+    if b'"Role":"coordinator"' not in manifest.read():
+        raise SystemExit("wrong manifest")
+
+chat = b'{"id":"chat-provider-1","object":"chat.completion","model":"provider-model","choices":[{"index":0,"message":{"role":"assistant","content":"world"},"finish_reason":"stop"}]}'
+models = b'{"object":"list","data":[{"id":"provider-model"}]}'
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *_args):
+        pass
+    def reply(self, body, content_type):
+        self.send_response(200)
+        self.send_header("content-type", content_type)
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        if content_type == "text/event-stream":
+            split = len(body) // 2
+            self.wfile.write(body[:split])
+            self.wfile.flush()
+            time.sleep(0.2)
+            self.wfile.write(body[split:])
+        else:
+            self.wfile.write(body)
+    def do_GET(self):
+        if self.path != "/v1/models" or self.headers.get("authorization") != "Bearer provider-secret":
+            self.send_error(401)
+            return
+        self.reply(models, "application/json")
+    def do_POST(self):
+        if self.headers.get("authorization") != "Bearer provider-secret":
+            self.send_error(401)
+            return
+        body = self.rfile.read(int(self.headers.get("content-length", "0")))
+        if body != b'{"model":"provider-model","messages":[{"role":"user","content":"hello"}]}':
+            self.send_error(400)
+            return
+        self.reply(chat, self.headers.get("accept", "application/json"))
+        threading.Timer(0.05, lambda: os._exit(0)).start()
+
+server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(args.tlsCertPath, args.tlsKeyPath)
+server.socket = context.wrap_socket(server.socket, server_side=True)
+server.serve_forever()
+"###;
 const CHUTES_CHUTE_ID: &str = "2ff25e81-4586-5ec8-b892-3a6f342693d7";
 const CHUTES_INSTANCE_ID: &str = "instance-a";
 const CHUTES_INSTANCE_ID_B: &str = "instance-b";
@@ -652,6 +721,10 @@ async fn openai_compatible_provider_e2e_via_runtime_config() {
             chutes_chute_ids: None,
             chutes_e2ee_discovery_rounds: None,
             chutes_e2ee_discovery_interval_seconds: None,
+            privatemode_manifest_path: None,
+            privatemode_manifest_sha256: None,
+            privatemode_proxy_binary_path: None,
+            privatemode_proxy_binary_sha256: None,
         }])
         .unwrap();
     let service = service_for_manager(manager);
@@ -707,6 +780,218 @@ async fn openai_compatible_provider_e2e_via_runtime_config() {
 }
 
 #[tokio::test]
+async fn privatemode_backend_forwards_buffered_and_streaming_only_with_its_binding() {
+    let policy_hash = "11".repeat(32);
+    let manifest = serde_json::to_vec(&json!({
+        "Policies": {
+            (&policy_hash): {
+                "Role": "coordinator",
+                "SANs": ["coordinator", "*"]
+            }
+        },
+        "ReferenceValues": {"snp": [{}]}
+    }))
+    .unwrap();
+    let manifest_path = temp_config_path();
+    std::fs::write(&manifest_path, &manifest).unwrap();
+    let binary_path = temp_config_path().with_extension("py");
+    std::fs::write(&binary_path, FAKE_PRIVATEMODE_PROXY).unwrap();
+    let manifest_digest = sha256_hex(&manifest)
+        .strip_prefix("sha256:")
+        .unwrap()
+        .to_string();
+    let binary_digest = sha256_hex(FAKE_PRIVATEMODE_PROXY)
+        .strip_prefix("sha256:")
+        .unwrap()
+        .to_string();
+    let supervisor = Arc::new(
+        PrivatemodeProxySupervisor::new(
+            &binary_path,
+            &binary_digest,
+            &manifest_path,
+            &manifest_digest,
+            "provider-secret",
+            2,
+            10,
+            10,
+        )
+        .unwrap(),
+    );
+    // Launch must use the already-verified sealed copies, not reopen mutable
+    // source paths after their digest check.
+    std::fs::write(&manifest_path, b"tampered after supervisor construction").unwrap();
+    std::fs::write(&binary_path, b"tampered after supervisor construction").unwrap();
+    let backend = PrivatemodeProviderBackend::new_with_timeouts(supervisor.clone(), 2, 10)
+        .unwrap()
+        .with_name("privatemode-provider");
+    let verifier = PrivatemodeProviderVerifier::new(supervisor.clone());
+    let event = verifier
+        .verify(UpstreamVerificationRequest {
+            upstream_name: "privatemode-provider".to_string(),
+            url_origin: Some("supervised://privatemode-proxy".to_string()),
+            model_id: "provider-model".to_string(),
+            forwarded_body_hash: sha256_hex(PROVIDER_CHAT_REQUEST),
+            required: true,
+        })
+        .await;
+    assert_eq!(event.result.as_str(), "verified");
+    assert_eq!(event.url_origin.as_deref(), Some(supervisor.base_url()));
+    assert!(matches!(
+        event.channel_bindings.as_slice(),
+        [ChannelBinding::ManifestSha256 {
+            manifest_sha256,
+            coordinator_policy_hash,
+            proxy_binary_sha256,
+            proxy_tls_certificate_sha256,
+            ..
+        }] if manifest_sha256 == &manifest_digest
+            && coordinator_policy_hash == &policy_hash
+            && proxy_binary_sha256 == &binary_digest
+            && proxy_tls_certificate_sha256 == supervisor.tls_certificate_sha256()
+    ));
+
+    let request = || UpstreamRequest {
+        body: PROVIDER_CHAT_REQUEST.to_vec(),
+        ..Default::default()
+    };
+    let response = backend
+        .forward_verified_prepared(backend.prepare(request()).unwrap(), &event)
+        .await
+        .unwrap();
+    assert_eq!(response.status_code, 200);
+    assert_eq!(response.body, CHAT_RESPONSE);
+
+    // The fake exits after its first inference. The next verified forward must
+    // start a fresh exact generation, complete readiness again, and still match
+    // the same content-addressed binding.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let response = backend
+        .forward_stream_verified_prepared(backend.prepare(request()).unwrap(), &event)
+        .await
+        .unwrap();
+    assert_eq!(response.status_code, 200);
+    drop(backend);
+    drop(verifier);
+    drop(supervisor);
+    let streamed = response
+        .body
+        .map(|chunk| chunk.unwrap())
+        .collect::<Vec<_>>()
+        .await
+        .concat();
+    assert_eq!(streamed, CHAT_RESPONSE);
+
+    let _ = std::fs::remove_file(manifest_path);
+    let _ = std::fs::remove_file(binary_path);
+}
+
+#[tokio::test]
+async fn privatemode_runtime_config_seals_the_supervised_generation_in_the_receipt() {
+    let policy_hash = "22".repeat(32);
+    let manifest = serde_json::to_vec(&json!({
+        "Policies": {
+            (&policy_hash): {
+                "Role": "coordinator",
+                "SANs": ["coordinator", "*"]
+            }
+        },
+        "ReferenceValues": {"snp": [{}]}
+    }))
+    .unwrap();
+    let manifest_path = temp_config_path();
+    let binary_path = temp_config_path().with_extension("py");
+    std::fs::write(&manifest_path, &manifest).unwrap();
+    std::fs::write(&binary_path, FAKE_PRIVATEMODE_PROXY).unwrap();
+    let manifest_digest = sha256_hex(&manifest)
+        .strip_prefix("sha256:")
+        .unwrap()
+        .to_string();
+    let binary_digest = sha256_hex(FAKE_PRIVATEMODE_PROXY)
+        .strip_prefix("sha256:")
+        .unwrap()
+        .to_string();
+
+    let config_path = temp_config_path();
+    let manager = Arc::new(
+        UpstreamConfigManager::load(&config_path, runtime_options(UpstreamVerifierMode::None))
+            .unwrap(),
+    );
+    manager
+        .replace(vec![UpstreamConfig {
+            name: "privatemode-provider".to_string(),
+            provider: UpstreamProvider::Privatemode,
+            base_url: "supervised://privatemode-proxy".to_string(),
+            path: None,
+            models: BTreeMap::from([("public-model".to_string(), "provider-model".to_string())]),
+            bearer_token: Some("provider-secret".to_string()),
+            accepted_workload_ids: None,
+            accepted_image_digests: None,
+            accepted_dstack_kms_root_public_keys: None,
+            pccs_url: None,
+            verifier_cache_seconds: None,
+            connect_timeout_seconds: Some(2),
+            read_timeout_seconds: Some(10),
+            verifier_request_timeout_seconds: Some(10),
+            verification_refresh_seconds: Some(0),
+            session_refresh_seconds: None,
+            chutes_e2ee_api_base: None,
+            chutes_chute_ids: None,
+            chutes_e2ee_discovery_rounds: None,
+            chutes_e2ee_discovery_interval_seconds: None,
+            privatemode_manifest_path: Some(manifest_path.display().to_string()),
+            privatemode_manifest_sha256: Some(manifest_digest.clone()),
+            privatemode_proxy_binary_path: Some(binary_path.display().to_string()),
+            privatemode_proxy_binary_sha256: Some(binary_digest.clone()),
+        }])
+        .unwrap();
+    let service = service_for_manager(manager);
+    let app = build_router(service.clone());
+    let (status, headers, body) = call(app, "POST", "/v1/chat/completions", CHAT_REQUEST).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(body, CHAT_RESPONSE);
+
+    let receipt_id = headers
+        .get("x-receipt-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap();
+    let receipt = service.get_receipt_by_receipt_id(receipt_id).unwrap();
+    let event = receipt_event(&receipt, EVENT_UPSTREAM_VERIFIED);
+    assert_eq!(event["result"], "verified");
+    assert_eq!(event["provider_type"], "privatemode");
+    assert_eq!(
+        event["verifier_id"],
+        "privatemode-proxy/supervised-contrast/v1"
+    );
+    assert_eq!(
+        event["channel_bindings"][0]["manifest_sha256"],
+        manifest_digest
+    );
+    assert_eq!(
+        event["channel_bindings"][0]["proxy_binary_sha256"],
+        binary_digest
+    );
+    assert_eq!(
+        event["channel_bindings"][0]["coordinator_policy_hash"],
+        policy_hash
+    );
+    assert_eq!(
+        event["channel_bindings"][0]["proxy_tls_certificate_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert!(event["url_origin"]
+        .as_str()
+        .unwrap()
+        .starts_with("https://127.0.0.1:"));
+
+    let _ = std::fs::remove_file(config_path);
+    let _ = std::fs::remove_file(manifest_path);
+    let _ = std::fs::remove_file(binary_path);
+}
+
+#[tokio::test]
 async fn openai_compatible_provider_routes_embeddings_via_runtime_config() {
     let (base_url, provider_calls) = serve_openai_provider_fixture().await;
     let path = temp_config_path();
@@ -742,6 +1027,10 @@ async fn openai_compatible_provider_routes_embeddings_via_runtime_config() {
             chutes_chute_ids: None,
             chutes_e2ee_discovery_rounds: None,
             chutes_e2ee_discovery_interval_seconds: None,
+            privatemode_manifest_path: None,
+            privatemode_manifest_sha256: None,
+            privatemode_proxy_binary_path: None,
+            privatemode_proxy_binary_sha256: None,
         }])
         .unwrap();
     let service = service_for_manager(manager);
@@ -826,6 +1115,10 @@ async fn dynamic_runtime_config_delegates_verified_forwarding_to_selected_backen
             chutes_chute_ids: None,
             chutes_e2ee_discovery_rounds: None,
             chutes_e2ee_discovery_interval_seconds: None,
+            privatemode_manifest_path: None,
+            privatemode_manifest_sha256: None,
+            privatemode_proxy_binary_path: None,
+            privatemode_proxy_binary_sha256: None,
         }])
         .unwrap();
     let backend = manager.backend();

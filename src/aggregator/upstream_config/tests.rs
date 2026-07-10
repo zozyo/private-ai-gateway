@@ -37,6 +37,10 @@ fn test_upstream_config(
         chutes_chute_ids: None,
         chutes_e2ee_discovery_rounds: None,
         chutes_e2ee_discovery_interval_seconds: None,
+        privatemode_manifest_path: None,
+        privatemode_manifest_sha256: None,
+        privatemode_proxy_binary_path: None,
+        privatemode_proxy_binary_sha256: None,
     }
 }
 
@@ -76,6 +80,7 @@ fn provider_attestation_scopes() {
     use AttestationScope::*;
     assert_eq!(UpstreamProvider::NearAi.attestation_scope(), PerRouter);
     assert_eq!(UpstreamProvider::Tinfoil.attestation_scope(), PerRouter);
+    assert_eq!(UpstreamProvider::Privatemode.attestation_scope(), PerRouter);
     assert_eq!(UpstreamProvider::PhalaDirect.attestation_scope(), PerModel);
     assert_eq!(UpstreamProvider::Chutes.attestation_scope(), PerInstance);
     assert_eq!(
@@ -84,7 +89,73 @@ fn provider_attestation_scopes() {
     );
     assert_eq!(UpstreamProvider::AciService.attestation_scope(), PerModel);
     assert!(UpstreamProvider::NearAi.attestation_scope().is_per_router());
+    assert!(UpstreamProvider::Privatemode
+        .attestation_scope()
+        .is_per_router());
     assert!(!UpstreamProvider::Chutes.attestation_scope().is_per_router());
+}
+
+#[test]
+fn parse_config_requires_a_supervised_pinned_privatemode_proxy() {
+    let digest = "aa".repeat(32);
+    let valid_text = format!(
+        r#"[{{
+          "name": "privatemode",
+          "provider": "privatemode",
+          "base_url": "supervised://privatemode-proxy",
+          "models": {{"public-model": "provider-model"}},
+          "bearer_token": "secret",
+          "privatemode_proxy_binary_path": "/opt/privatemode-proxy",
+          "privatemode_proxy_binary_sha256": "{digest}",
+          "privatemode_manifest_path": "/run/privatemode/manifest.json",
+          "privatemode_manifest_sha256": "{digest}"
+        }}]"#
+    );
+    let valid = parse_config_text(&valid_text).expect("supervised pinned config should parse");
+    assert_eq!(valid[0].provider, UpstreamProvider::Privatemode);
+
+    for (name, text, expected) in [
+        (
+            "external origin",
+            valid_text.replace("supervised://privatemode-proxy", "http://127.0.0.1:8080"),
+            "requires base_url",
+        ),
+        (
+            "missing token",
+            valid_text.replace(
+                r#"          "bearer_token": "secret",
+"#,
+                "",
+            ),
+            "requires bearer_token",
+        ),
+        (
+            "relative binary",
+            valid_text.replace("/opt/privatemode-proxy", "privatemode-proxy"),
+            "binary_path must be absolute",
+        ),
+        (
+            "bad binary digest",
+            valid_text.replacen(&digest, "not-a-digest", 1),
+            "binary_sha256 must be a 32-byte",
+        ),
+        (
+            "relative manifest",
+            valid_text.replace("/run/privatemode/manifest.json", "manifest.json"),
+            "manifest_path must be absolute",
+        ),
+        (
+            "bad manifest digest",
+            valid_text.replace(
+                &format!(r#""privatemode_manifest_sha256": "{digest}""#),
+                r#""privatemode_manifest_sha256": "not-a-digest""#,
+            ),
+            "manifest_sha256 must be a 32-byte",
+        ),
+    ] {
+        let err = parse_config_text(&text).expect_err(name);
+        assert!(err.to_string().contains(expected), "{name}: {err}");
+    }
 }
 
 #[async_trait]
@@ -264,6 +335,10 @@ async fn prewarm_verification_deduplicates_upstream_models() {
         chutes_chute_ids: None,
         chutes_e2ee_discovery_rounds: None,
         chutes_e2ee_discovery_interval_seconds: None,
+        privatemode_manifest_path: None,
+        privatemode_manifest_sha256: None,
+        privatemode_proxy_binary_path: None,
+        privatemode_proxy_binary_sha256: None,
     }];
     let state = Arc::new(RwLock::new(Arc::new(ConfiguredUpstreams {
         config,

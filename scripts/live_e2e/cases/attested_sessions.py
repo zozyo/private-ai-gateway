@@ -85,12 +85,18 @@ def assert_upstream_attested_session(
         _norm_endpoint(session.get("endpoint")),
         _norm_endpoint(event.get("url_origin")),
     )
-    expect_equal(
-        provider,
-        "session.endpoint",
-        _norm_endpoint(session.get("endpoint")),
-        _norm_endpoint(provider.base_url),
-    )
+    if provider.provider != "privatemode":
+        expect_equal(
+            provider,
+            "session.endpoint",
+            _norm_endpoint(session.get("endpoint")),
+            _norm_endpoint(provider.base_url),
+        )
+    elif not str(session.get("endpoint") or "").startswith("https://127.0.0.1:"):
+        raise RuntimeError(
+            f"{provider.name} supervised proxy endpoint is not pinned loopback TLS: "
+            f"{session.get('endpoint')!r}"
+        )
     expect_equal(
         provider,
         "session.verifier_id",

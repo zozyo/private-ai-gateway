@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use super::external::ExternalProviderVerifier;
 #[cfg(test)]
 use super::external::ProviderVerifierConfigError;
-use crate::aci::receipt::{UpstreamVerifiedEvent, VerificationResult};
-use crate::aci::upstream::ChutesSessionStore;
+use crate::aci::receipt::{ChannelBinding, UpstreamVerifiedEvent, VerificationResult};
+use crate::aci::upstream::{ChutesSessionStore, PrivatemodeProxySupervisor};
 use crate::aggregator::service::{UpstreamVerificationRequest, UpstreamVerifier};
 use crate::aggregator::upstream_config::UpstreamProvider;
 
@@ -235,6 +235,76 @@ impl UpstreamVerifier for NearAiProviderVerifier {
     fn invalidate(&self, request: &UpstreamVerificationRequest) {
         self.verifier.invalidate(request);
     }
+}
+
+/// Verifier for the exact official Privatemode proxy child owned by the gateway.
+#[derive(Debug, Clone)]
+pub struct PrivatemodeProviderVerifier {
+    supervisor: Arc<PrivatemodeProxySupervisor>,
+}
+
+impl PrivatemodeProviderVerifier {
+    pub fn new(supervisor: Arc<PrivatemodeProxySupervisor>) -> Self {
+        Self { supervisor }
+    }
+
+    async fn verify_supervised(
+        &self,
+        request: UpstreamVerificationRequest,
+    ) -> UpstreamVerifiedEvent {
+        if let Err(err) = self.supervisor.ensure_ready().await {
+            return UpstreamVerifiedEvent {
+                upstream_name: request.upstream_name,
+                provider_type: Some("privatemode".to_string()),
+                model_id: request.model_id,
+                url_origin: Some(self.supervisor.base_url().to_string()),
+                verifier_id: "privatemode-proxy/supervised-contrast/v1".to_string(),
+                result: VerificationResult::Failed,
+                required: request.required,
+                reason: Some(err.to_string()),
+                ..Default::default()
+            };
+        }
+        UpstreamVerifiedEvent {
+            upstream_name: request.upstream_name,
+            provider_type: Some("privatemode".to_string()),
+            model_id: request.model_id,
+            url_origin: Some(self.supervisor.base_url().to_string()),
+            verifier_id: "privatemode-proxy/supervised-contrast/v1".to_string(),
+            result: VerificationResult::Verified,
+            required: request.required,
+            evidence: Some(self.supervisor.manifest_evidence()),
+            channel_bindings: vec![ChannelBinding::ManifestSha256 {
+                provider: "privatemode".to_string(),
+                manifest_sha256: self.supervisor.manifest_sha256().to_string(),
+                coordinator_policy_hash: self.supervisor.coordinator_policy_hash().to_string(),
+                proxy_binary_sha256: self.supervisor.binary_sha256().to_string(),
+                proxy_tls_certificate_sha256: self.supervisor.tls_certificate_sha256().to_string(),
+            }],
+            provider_claims: Some(serde_json::json!({
+                "trust_boundary": "gateway-supervised-privatemode-proxy",
+                "proxy_binary_sha256": self.supervisor.binary_sha256(),
+                "manifest_sha256": self.supervisor.manifest_sha256(),
+                "coordinator_policy_hash": self.supervisor.coordinator_policy_hash(),
+                "proxy_tls_certificate_sha256": self.supervisor.tls_certificate_sha256(),
+                "request_encryption": "privatemode-oae",
+            })),
+            reason: None,
+        }
+    }
+}
+
+#[async_trait]
+impl UpstreamVerifier for PrivatemodeProviderVerifier {
+    async fn verify(&self, request: UpstreamVerificationRequest) -> UpstreamVerifiedEvent {
+        self.verify_supervised(request).await
+    }
+
+    async fn refresh(&self, request: UpstreamVerificationRequest) -> UpstreamVerifiedEvent {
+        self.verify_supervised(request).await
+    }
+
+    fn invalidate(&self, _request: &UpstreamVerificationRequest) {}
 }
 
 /// Verifier for `PhalaDirect` upstreams: a Phala dstack-vllm-proxy attestation

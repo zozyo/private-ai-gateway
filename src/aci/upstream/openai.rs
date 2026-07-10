@@ -104,6 +104,11 @@ impl OpenAICompatibleBackend {
         self
     }
 
+    pub(super) fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
+    }
+
     fn apply_auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.auth {
             Some(UpstreamAuth::Bearer(token)) => {
@@ -302,6 +307,12 @@ impl OpenAICompatibleBackend {
                 } => {
                     return Err(UpstreamError::Transport(format!(
                         "backend {} cannot enforce {provider} E2EE binding {algorithm:?}",
+                        self.name
+                    )));
+                }
+                ChannelBinding::ManifestSha256 { provider, .. } => {
+                    return Err(UpstreamError::Transport(format!(
+                        "backend {} cannot enforce {provider} manifest binding",
                         self.name
                     )));
                 }

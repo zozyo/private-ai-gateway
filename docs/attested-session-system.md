@@ -187,16 +187,17 @@ auditor sees the full provider scope. The event carries a stable `provider_type`
 (distinct from the operator's per-endpoint config `name`) that selects the
 mapping. A `failed` result asserts nothing.
 
-| Claim | tinfoil | near-ai | chutes | phala-direct | generic |
-| --- | --- | --- | --- | --- | --- |
-| `tee_attested` | ✅ hardware | ✅ hardware | ✅ hardware | ✅ hardware | ✅ verifier-derived |
-| `tcb_up_to_date` | tri-state¹ | tri-state¹ | tri-state¹ | tri-state¹ | unknown |
-| `serving_software_known_good` | ✅ Sigstore² | unknown | unknown | unknown | unknown |
-| `os_known_good` | unknown | unknown | unknown | unknown | unknown |
-| `gpu_attested` | unknown | unknown | ✅³ | ✅³ | unknown |
-| `model_weights_provenance` | unknown | unknown | unknown | unknown | unknown |
+| Claim | tinfoil | near-ai | chutes | phala-direct | privatemode | generic |
+| --- | --- | --- | --- | --- | --- | --- |
+| `tee_attested` | ✅ hardware | ✅ hardware | ✅ hardware | ✅ hardware | ✅ verifier-derived⁴ | ✅ verifier-derived |
+| `tcb_up_to_date` | tri-state¹ | tri-state¹ | tri-state¹ | tri-state¹ | unknown | unknown |
+| `serving_software_known_good` | ✅ Sigstore² | unknown | unknown | unknown | unknown | unknown |
+| `os_known_good` | unknown | unknown | unknown | unknown | unknown | unknown |
+| `gpu_attested` | unknown | unknown | ✅³ | ✅³ | unknown | unknown |
+| `model_weights_provenance` | unknown | unknown | unknown | unknown | unknown | unknown |
 
-- For the four real provider verifiers `tee_attested` is `HardwareProven`: a
+- For Tinfoil, NEAR AI, Chutes, and PhalaDirect, `tee_attested` is
+  `HardwareProven`: a
   genuine TEE quote was verified and the request channel bound to it. For NEAR AI
   this is the **gateway** TD — a router that fronts many models behind one TEE,
   so its attested session is the gateway *channel*: one session per router, not
@@ -209,6 +210,12 @@ mapping. A `failed` result asserts nothing.
   roadmap item is finer: binding the exact backend instance to a specific request
   (a per-instance, request-bound model attestation on the receipt — see
   [roadmap.md](roadmap.md)).
+- ⁴ Privatemode delegates Contrast verification and E2EE-secret ownership to the
+  official proxy supervised inside the gateway's attested workload. The gateway
+  seals the exact proxy executable and manifest, performs the fresh child's
+  credential exchange over pinned loopback TLS, and enforces all of those
+  bindings. It does not independently receive the hardware quote, so the typed
+  claim is `VerifierDerived`; raw manifest facts remain in `claims.extra`.
 - ¹ `tcb_up_to_date` is an honest tri-state from the verifier's reported
   `tcb_status` (`HardwareProven`): `UpToDate` asserts, any other reported status
   **refutes** (the quote proves a stale TCB — the gateway records the bad claim

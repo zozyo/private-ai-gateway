@@ -5,7 +5,7 @@ use std::path::Path;
 
 use super::{
     ConfiguredUpstreams, UpstreamConfig, UpstreamConfigError, UpstreamConfigSnapshot,
-    UpstreamProvider, UpstreamRuntimeOptions,
+    UpstreamProvider, UpstreamRuntimeOptions, PRIVATEMODE_SUPERVISED_BASE_URL,
 };
 
 const DEFAULT_UPSTREAM_SESSION_REFRESH_SECONDS: u64 = 45;
@@ -105,6 +105,11 @@ fn looks_like_uuid(value: &str) -> bool {
     value.len() == 36
         && value.split('-').count() == 5
         && value.chars().all(|c| c == '-' || c.is_ascii_hexdigit())
+}
+
+fn looks_like_sha256(value: &str) -> bool {
+    let value = value.trim().strip_prefix("sha256:").unwrap_or(value.trim());
+    value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 pub(super) fn snapshot_for(path: &Path, state: &ConfiguredUpstreams) -> UpstreamConfigSnapshot {
@@ -240,6 +245,87 @@ pub(super) fn validate_config(config: &[UpstreamConfig]) -> Result<(), UpstreamC
         {
             return Err(UpstreamConfigError::InvalidConfig(format!(
                 "upstream {:?} has Chutes E2EE fields but provider is not chutes",
+                upstream.name
+            )));
+        }
+        if upstream.provider == UpstreamProvider::Privatemode {
+            if upstream.base_url != PRIVATEMODE_SUPERVISED_BASE_URL {
+                return Err(UpstreamConfigError::InvalidConfig(format!(
+                    "upstream {:?} provider privatemode requires base_url {:?}",
+                    upstream.name, PRIVATEMODE_SUPERVISED_BASE_URL
+                )));
+            }
+            if upstream
+                .bearer_token
+                .as_deref()
+                .is_none_or(|token| token.trim().is_empty())
+            {
+                return Err(UpstreamConfigError::InvalidConfig(format!(
+                    "upstream {:?} provider privatemode requires bearer_token for supervised secret exchange",
+                    upstream.name
+                )));
+            }
+            let Some(binary_path) = upstream.privatemode_proxy_binary_path.as_deref() else {
+                return Err(UpstreamConfigError::InvalidConfig(format!(
+                    "upstream {:?} provider privatemode requires privatemode_proxy_binary_path",
+                    upstream.name
+                )));
+            };
+            if !Path::new(binary_path).is_absolute() {
+                return Err(UpstreamConfigError::InvalidConfig(format!(
+                    "upstream {:?} privatemode_proxy_binary_path must be absolute",
+                    upstream.name
+                )));
+            }
+            let Some(binary_digest) = upstream.privatemode_proxy_binary_sha256.as_deref() else {
+                return Err(UpstreamConfigError::InvalidConfig(format!(
+                    "upstream {:?} provider privatemode requires privatemode_proxy_binary_sha256",
+                    upstream.name
+                )));
+            };
+            if !looks_like_sha256(binary_digest) {
+                return Err(UpstreamConfigError::InvalidConfig(format!(
+                    "upstream {:?} privatemode_proxy_binary_sha256 must be a 32-byte hex SHA-256 digest",
+                    upstream.name
+                )));
+            }
+            let Some(manifest_path) = upstream.privatemode_manifest_path.as_deref() else {
+                return Err(UpstreamConfigError::InvalidConfig(format!(
+                    "upstream {:?} provider privatemode requires privatemode_manifest_path",
+                    upstream.name
+                )));
+            };
+            if manifest_path.trim().is_empty() {
+                return Err(UpstreamConfigError::InvalidConfig(format!(
+                    "upstream {:?} provider privatemode requires privatemode_manifest_path",
+                    upstream.name
+                )));
+            }
+            if !Path::new(manifest_path).is_absolute() {
+                return Err(UpstreamConfigError::InvalidConfig(format!(
+                    "upstream {:?} privatemode_manifest_path must be absolute",
+                    upstream.name
+                )));
+            }
+            let Some(digest) = upstream.privatemode_manifest_sha256.as_deref() else {
+                return Err(UpstreamConfigError::InvalidConfig(format!(
+                    "upstream {:?} provider privatemode requires privatemode_manifest_sha256",
+                    upstream.name
+                )));
+            };
+            if !looks_like_sha256(digest) {
+                return Err(UpstreamConfigError::InvalidConfig(format!(
+                    "upstream {:?} privatemode_manifest_sha256 must be a 32-byte hex SHA-256 digest",
+                    upstream.name
+                )));
+            }
+        } else if upstream.privatemode_manifest_path.is_some()
+            || upstream.privatemode_manifest_sha256.is_some()
+            || upstream.privatemode_proxy_binary_path.is_some()
+            || upstream.privatemode_proxy_binary_sha256.is_some()
+        {
+            return Err(UpstreamConfigError::InvalidConfig(format!(
+                "upstream {:?} has Privatemode fields but provider is not privatemode",
                 upstream.name
             )));
         }

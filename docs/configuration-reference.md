@@ -159,6 +159,7 @@ Supported `provider` values:
 | `tinfoil` | Tinfoil provider adapter. |
 | `near-ai` | NEAR AI provider adapter. |
 | `chutes` | Chutes provider adapter. |
+| `privatemode` | Gateway-supervised official Privatemode proxy. Requires `base_url: "supervised://privatemode-proxy"`, a bearer token, absolute manifest and proxy-binary paths, and SHA-256 pins for both files. |
 | `phala-direct` | Direct Phala dstack-vllm-proxy endpoint. |
 
 Provider verification policy belongs on the upstream entry. For ACI service
@@ -169,6 +170,14 @@ For `aci-service`, `base_url` is the HTTPS origin used for both model traffic an
 `/v1/attestation/report`. The router fetches the report through normal TLS,
 derives the attested TLS SPKI binding from that report, then pins that SPKI for
 the actual upstream model request.
+
+For `privatemode`, the gateway reads and verifies
+`privatemode_manifest_path`/`privatemode_manifest_sha256` and
+`privatemode_proxy_binary_path`/`privatemode_proxy_binary_sha256` while loading
+the upstream config. It copies both files into sealed memory files, launches
+that exact binary itself, and assigns a pinned ephemeral loopback TLS endpoint.
+The logical `base_url` value is fixed and is never used as a network address.
+See [Privatemode verification](providers/privatemode/verification.md).
 
 ## Environment Variables
 

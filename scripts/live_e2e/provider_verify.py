@@ -25,6 +25,21 @@ def verify_provider(
     timeout: int = 300,
     artifact_dir: Path | None = None,
 ) -> dict[str, Any]:
+    if provider.provider == "privatemode":
+        # Privatemode verification is inseparable from the exact proxy child
+        # supervised by the Rust gateway. A standalone Python probe would not
+        # authenticate that process or its active manifest and must not produce
+        # a competing "verified" result.
+        output = {
+            "status": "performed_by_gateway_supervisor",
+            "verifier_id": "privatemode-proxy/supervised-contrast/v1",
+        }
+        if artifact_dir:
+            write_json(
+                artifact_dir / provider.name / "provider-verifier-output.json",
+                output,
+            )
+        return output
     # The bridge runs from the gateway project (cwd=ROOT) so it uses the gateway's
     # own uv env and the vendored confidential_verifier package. An external verifier
     # checkout is selected only when PRIVATE_AI_VERIFIER_DIR is set in the environment.
