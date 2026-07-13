@@ -43,7 +43,7 @@ This is the smallest practical container config.
 | `upstream_config_seed_path` | unset | Read-only JSON seed copied to `<state_dir>/upstreams.json` only when the active upstream config is missing or empty. |
 | `admin_token` | unset | Bearer token for `GET` and `PUT /v1/admin/upstreams`. When unset, the admin API is not exposed. |
 | `admin_token_sha256` | unset | Optional SHA-256 policy for the admin token supplied by config or `PRIVATE_AI_GATEWAY_ADMIN_TOKEN`. Startup fails on a missing or mismatched token. |
-| `inference_token_sha256` | unset | Optional SHA-256 of the downstream bearer accepted by inference POST endpoints. The high-entropy bearer remains client-side; when this field is set, missing or mismatched credentials are rejected before request parsing or forwarding. |
+| `inference_token_sha256` | unset | SHA-256 of the downstream bearer accepted by inference POST endpoints; required when `privatemode_proxy` is configured. The high-entropy bearer remains client-side. Missing or mismatched credentials are rejected before request parsing or forwarding. |
 | `dstack_endpoint` | dstack SDK default | dstack SDK endpoint, such as `unix:/var/run/dstack.sock`. |
 | `middleware` | unset | Optional middleware section. When present, the gateway consults a control plane to route and authorize each request and applies request/response transforms; when unset it serves directly. See [Middleware](#middleware). |
 | `privatemode_proxy` | unset | Static policy for an official Privatemode proxy co-deployed in the same measured dstack Compose. Required before a `privatemode` route can load. |

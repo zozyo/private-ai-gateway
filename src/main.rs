@@ -115,6 +115,16 @@ fn parse_sha256_policy(name: &str, expected: Option<&str>) -> Result<Option<[u8;
         })
 }
 
+fn validate_inference_auth_policy(
+    privatemode_configured: bool,
+    inference_token_sha256: Option<[u8; 32]>,
+) -> Result<(), String> {
+    if privatemode_configured && inference_token_sha256.is_none() {
+        return Err("privatemode_proxy requires inference_token_sha256".to_string());
+    }
+    Ok(())
+}
+
 fn invalid_input(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
 }
@@ -442,6 +452,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gateway_config.inference_token_sha256.as_deref(),
     )
     .map_err(invalid_input)?;
+    validate_inference_auth_policy(
+        gateway_config.privatemode_proxy.is_some(),
+        inference_token_sha256,
+    )
+    .map_err(invalid_input)?;
     let source_provenance = resolve_source_provenance()?;
     let tls_public_keys = resolve_tls_public_keys(&gateway_config.tls)?;
     let dstack_endpoint = gateway_config.dstack_endpoint.clone();
@@ -750,7 +765,7 @@ mod tests {
         resolve_state_dir, resolve_tls_public_keys, revocations_path,
         seed_upstream_config_if_empty, session_log_path,
         source_provenance_from_git_launcher_config, upstream_config_path,
-        validate_sha256_secret_policy,
+        validate_inference_auth_policy, validate_sha256_secret_policy,
     };
 
     const TEST_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
@@ -821,6 +836,14 @@ kBH1U3IsAJyU8UbZqzFEUGG7Ro3vdOQ=
         );
         let err = parse_sha256_policy("inference_token", Some("00")).unwrap_err();
         assert!(err.contains("expected 32 bytes"));
+    }
+
+    #[test]
+    fn privatemode_static_policy_requires_downstream_inference_auth() {
+        assert!(validate_inference_auth_policy(false, None).is_ok());
+        assert!(validate_inference_auth_policy(true, Some([7; 32])).is_ok());
+        let err = validate_inference_auth_policy(true, None).unwrap_err();
+        assert_eq!(err, "privatemode_proxy requires inference_token_sha256");
     }
 
     fn temp_path(name: &str) -> std::path::PathBuf {
