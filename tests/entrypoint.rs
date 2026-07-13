@@ -61,7 +61,9 @@ fn privatemode_gateway_and_proxy_share_measured_pins() {
     assert!(body.contains("PRIVATEMODE_MANIFEST_SHA256:?"));
     assert!(body.contains("PRIVATEMODE_CREDENTIAL_SHA256:?"));
     assert!(body.contains("PRIVATEMODE_MANIFEST_JSON:?"));
-    assert!(body.contains("PRIVATE_AI_GATEWAY_ADMIN_TOKEN:"));
+    assert!(body.contains("PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256:?"));
+    assert!(body.contains("/dstack/.host-shared/.decrypted-env"));
+    assert!(body.contains("PRIVATE_AI_GATEWAY_ENV_FILE: /run/secrets/dstack-encrypted-env"));
     assert!(!body.contains(r#""admin_token": "${PRIVATE_AI_GATEWAY_ADMIN_TOKEN"#));
     assert_eq!(body.matches("source: privatemode-manifest").count(), 2);
 }

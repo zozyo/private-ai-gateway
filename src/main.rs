@@ -62,6 +62,50 @@ fn env_non_empty(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn env_file_non_empty(path: &str, name: &str) -> Result<Option<String>, String> {
+    let entries = dotenvy::from_path_iter(path)
+        .map_err(|err| format!("failed to read encrypted environment file {path}: {err}"))?;
+    let mut value = None;
+    for entry in entries {
+        let (key, candidate) = entry
+            .map_err(|err| format!("failed to parse encrypted environment file {path}: {err}"))?;
+        if key == name {
+            value = Some(candidate);
+        }
+    }
+    Ok(value
+        .map(|candidate| candidate.trim().to_string())
+        .filter(|candidate| !candidate.is_empty()))
+}
+
+fn validate_sha256_secret_policy(
+    name: &str,
+    secret: Option<&str>,
+    expected: Option<&str>,
+) -> Result<(), String> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let expected = expected
+        .trim()
+        .strip_prefix("sha256:")
+        .unwrap_or(expected.trim());
+    let expected_bytes =
+        hex::decode(expected).map_err(|err| format!("invalid {name}_sha256: {err}"))?;
+    if expected_bytes.len() != 32 {
+        return Err(format!(
+            "invalid {name}_sha256: expected 32 bytes, got {}",
+            expected_bytes.len()
+        ));
+    }
+    let secret = secret.ok_or_else(|| format!("{name}_sha256 requires {name}"))?;
+    let actual: [u8; 32] = Sha256::digest(secret.as_bytes()).into();
+    if actual.as_slice() != expected_bytes.as_slice() {
+        return Err(format!("{name} does not match static {name}_sha256 policy"));
+    }
+    Ok(())
+}
+
 fn invalid_input(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
 }
@@ -73,6 +117,7 @@ struct GatewayConfigFile {
     state_dir: Option<String>,
     upstream_config_seed_path: Option<String>,
     admin_token: Option<String>,
+    admin_token_sha256: Option<String>,
     /// Bounded keyset-epoch validity window in seconds (§4.7). Defaults to
     /// [`DEFAULT_KEYSET_EPOCH_WINDOW_SECONDS`] (~4 weeks).
     keyset_epoch_window_seconds: Option<u64>,
@@ -366,8 +411,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let upstream_config_path = upstream_config_path(&state_dir);
     let session_log_path = session_log_path(&state_dir);
     let upstream_config_seed_path = gateway_config.upstream_config_seed_path.clone();
-    let admin_token = env_non_empty("PRIVATE_AI_GATEWAY_ADMIN_TOKEN")
-        .or_else(|| gateway_config.admin_token.clone());
+    let admin_token = match env_non_empty("PRIVATE_AI_GATEWAY_ADMIN_TOKEN") {
+        Some(token) => Some(token),
+        None => match env_non_empty("PRIVATE_AI_GATEWAY_ENV_FILE") {
+            Some(path) => env_file_non_empty(&path, "PRIVATE_AI_GATEWAY_ADMIN_TOKEN")
+                .map_err(invalid_input)?,
+            None => gateway_config.admin_token.clone(),
+        },
+    };
+    validate_sha256_secret_policy(
+        "admin_token",
+        admin_token.as_deref(),
+        gateway_config.admin_token_sha256.as_deref(),
+    )
+    .map_err(invalid_input)?;
     let source_provenance = resolve_source_provenance()?;
     let tls_public_keys = resolve_tls_public_keys(&gateway_config.tls)?;
     let dstack_endpoint = gateway_config.dstack_endpoint.clone();
@@ -661,9 +718,10 @@ mod tests {
     use private_ai_gateway::aggregator::upstream_config::{parse_config_text, UpstreamProvider};
 
     use super::{
-        keyset_epoch_path, load_gateway_config, resolve_state_dir, resolve_tls_public_keys,
-        revocations_path, seed_upstream_config_if_empty, session_log_path,
+        env_file_non_empty, keyset_epoch_path, load_gateway_config, resolve_state_dir,
+        resolve_tls_public_keys, revocations_path, seed_upstream_config_if_empty, session_log_path,
         source_provenance_from_git_launcher_config, upstream_config_path,
+        validate_sha256_secret_policy,
     };
 
     const TEST_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
@@ -698,6 +756,25 @@ kBH1U3IsAJyU8UbZqzFEUGG7Ro3vdOQ=
         ));
         std::fs::write(&path, TEST_CERT_PEM).unwrap();
         path
+    }
+
+    #[test]
+    fn encrypted_env_admin_token_is_parsed_and_digest_bound() {
+        let path = temp_path("gateway-encrypted-env");
+        std::fs::write(
+            &path,
+            "IGNORED=value\nPRIVATE_AI_GATEWAY_ADMIN_TOKEN='admin token'\n",
+        )
+        .unwrap();
+        let token =
+            env_file_non_empty(path.to_str().unwrap(), "PRIVATE_AI_GATEWAY_ADMIN_TOKEN").unwrap();
+        assert_eq!(token.as_deref(), Some("admin token"));
+        let digest = private_ai_gateway::aci::canonical::sha256_hex(b"admin token");
+        validate_sha256_secret_policy("admin_token", token.as_deref(), Some(&digest)).unwrap();
+        let err = validate_sha256_secret_policy("admin_token", Some("different"), Some(&digest))
+            .unwrap_err();
+        assert!(err.contains("does not match static admin_token_sha256"));
+        let _ = std::fs::remove_file(path);
     }
 
     fn temp_path(name: &str) -> std::path::PathBuf {

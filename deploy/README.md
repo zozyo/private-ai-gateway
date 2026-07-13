@@ -49,6 +49,7 @@ lists all inputs.
 ```bash
 export PRIVATE_AI_GATEWAY_REPO_COMMIT=<full-40-hex-sha>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<long-random-admin-token>
+export PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256="$(printf %s "$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)"
 export PRIVATEMODE_MANIFEST_JSON="$(jq -c . /absolute/path/to/manifest.json)"
 export PRIVATEMODE_MANIFEST_SHA256="$(printf %s "$PRIVATEMODE_MANIFEST_JSON" | sha256sum | cut -d' ' -f1)"
 export PRIVATEMODE_CREDENTIAL_SHA256=<sha256-of-privatemode-api-key>
@@ -62,9 +63,10 @@ phala-h4xuser deploy -n private-ai-gateway \
 ```
 
 Render before deployment so the exact compact manifest, its digest, the
-credential digest, image digest, and git commit are part of the measured
-Compose. The admin token is deliberately absent from the rendered file and is
-passed through Phala's encrypted environment instead.
+credential digest, admin-token digest, image digest, and git commit are part of
+the measured Compose. The admin token itself is deliberately absent from the
+rendered file and is passed through Phala's encrypted environment instead. The
+gateway checks it against the measured digest before enabling the admin API.
 
 That compose pins
 `ghcr.io/edgelesssys/privatemode/privatemode-proxy` at OCI digest

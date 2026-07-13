@@ -42,6 +42,7 @@ This is the smallest practical container config.
 | `state_dir` | `/var/lib/private-ai-gateway` | Gateway-owned writable state directory. The active upstream config and attested-session log are derived from this directory. |
 | `upstream_config_seed_path` | unset | Read-only JSON seed copied to `<state_dir>/upstreams.json` only when the active upstream config is missing or empty. |
 | `admin_token` | unset | Bearer token for `GET` and `PUT /v1/admin/upstreams`. When unset, the admin API is not exposed. |
+| `admin_token_sha256` | unset | Optional SHA-256 policy for the admin token supplied by config or `PRIVATE_AI_GATEWAY_ADMIN_TOKEN`. Startup fails on a missing or mismatched token. |
 | `dstack_endpoint` | dstack SDK default | dstack SDK endpoint, such as `unix:/var/run/dstack.sock`. |
 | `middleware` | unset | Optional middleware section. When present, the gateway consults a control plane to route and authorize each request and applies request/response transforms; when unset it serves directly. See [Middleware](#middleware). |
 | `privatemode_proxy` | unset | Static policy for an official Privatemode proxy co-deployed in the same measured dstack Compose. Required before a `privatemode` route can load. |
@@ -207,7 +208,8 @@ bridges may consume provider-specific environment variables such as
 | Variable | Use |
 | --- | --- |
 | `PRIVATE_AI_GATEWAY_CONFIG_PATH` | Required. Selects the static gateway config file. |
-| `PRIVATE_AI_GATEWAY_ADMIN_TOKEN` | Optional runtime secret overriding static `admin_token`; the Privatemode Compose inherits it from the encrypted deployment environment so it is not disclosed by measured Compose source. |
+| `PRIVATE_AI_GATEWAY_ADMIN_TOKEN` | Optional runtime secret overriding static `admin_token`. |
+| `PRIVATE_AI_GATEWAY_ENV_FILE` | Optional dotenv file consulted for `PRIVATE_AI_GATEWAY_ADMIN_TOKEN` when that variable is absent. The Privatemode Compose points it at dstack's decrypted, TEE-internal deployment environment. |
 | `RUST_LOG` | Tracing filter consumed by `tracing_subscriber`. |
 
 Deployment tooling also uses these variables:
@@ -219,7 +221,8 @@ Deployment tooling also uses these variables:
 | `RUSTUP_HOME` | Optional override for Rustup state. Defaults under `PRIVATE_AI_GATEWAY_CACHE_DIR`. |
 | `CARGO_TARGET_DIR` | Optional override for Cargo build output. Defaults under `PRIVATE_AI_GATEWAY_CACHE_DIR`. |
 | `PRIVATE_AI_GATEWAY_REPO_COMMIT` | Used by `deploy/compose.yaml` interpolation for the git-launcher `COMMIT_SHA` pin. |
-| `PRIVATE_AI_GATEWAY_ADMIN_TOKEN` | `deploy/compose.yaml` interpolates this legacy input; `compose.privatemode.yaml` instead inherits it at runtime from the encrypted deployment environment. |
+| `PRIVATE_AI_GATEWAY_ADMIN_TOKEN` | `deploy/compose.yaml` interpolates this legacy input; `compose.privatemode.yaml` instead reads it from dstack's TEE-internal decrypted environment file. |
+| `PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256` | Non-secret digest rendered into `compose.privatemode.yaml`; binds the encrypted admin token to measured static policy. |
 | `PRIVATEMODE_MANIFEST_JSON` | Compact reviewed manifest embedded into the rendered `deploy/compose.privatemode.yaml` config and mounted into both services. |
 | `PRIVATEMODE_MANIFEST_SHA256` | Used by `deploy/compose.privatemode.yaml` to pin those exact manifest bytes in static gateway policy. |
 | `PRIVATEMODE_CREDENTIAL_SHA256` | Used by `deploy/compose.privatemode.yaml` to bind the one accepted Privatemode API credential without placing the credential itself in measured config. |

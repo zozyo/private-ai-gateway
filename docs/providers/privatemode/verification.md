@@ -75,6 +75,7 @@ and set the reviewed manifest file and digest before deployment:
 ```bash
 export PRIVATE_AI_GATEWAY_REPO_COMMIT=<audited-commit>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<admin-token>
+export PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256="$(printf %s "$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)"
 export PRIVATEMODE_MANIFEST_JSON="$(jq -c . /absolute/path/to/manifest.json)"
 export PRIVATEMODE_MANIFEST_SHA256="$(printf %s "$PRIVATEMODE_MANIFEST_JSON" | sha256sum | cut -d' ' -f1)"
 export PRIVATEMODE_CREDENTIAL_SHA256=<sha256-of-privatemode-api-key>
@@ -89,7 +90,8 @@ phala-h4xuser deploy -n private-ai-gateway \
 
 Rendering makes the manifest and non-secret pins part of the measured Compose.
 The admin token remains outside it and enters only through the encrypted
-deployment environment.
+deployment environment; its measured SHA-256 policy prevents an untrusted host
+from substituting a credential it knows.
 
 The measured static gateway config has this shape:
 
