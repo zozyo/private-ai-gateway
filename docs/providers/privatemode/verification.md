@@ -104,6 +104,7 @@ The measured static gateway config has this shape:
 
 ```json
 {
+  "inference_token_sha256": "<sha256-of-high-entropy-client-bearer>",
   "privatemode_proxy": {
     "base_url": "http://privatemode-proxy:8080",
     "manifest_path": "/run/privatemode/manifest.json",
