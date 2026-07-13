@@ -223,6 +223,6 @@ Deployment tooling also uses these variables:
 | `PRIVATE_AI_GATEWAY_REPO_COMMIT` | Used by `deploy/compose.yaml` interpolation for the git-launcher `COMMIT_SHA` pin. |
 | `PRIVATE_AI_GATEWAY_ADMIN_TOKEN` | `deploy/compose.yaml` interpolates this legacy input; `compose.privatemode.yaml` instead reads it from dstack's TEE-internal decrypted environment file. |
 | `PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256` | Non-secret digest rendered into `compose.privatemode.yaml`; binds the encrypted admin token to measured static policy. |
-| `PRIVATEMODE_MANIFEST_JSON` | Compact reviewed manifest embedded into the rendered `deploy/compose.privatemode.yaml` config and mounted into both services. |
+| `PRIVATEMODE_MANIFEST_PATH` | Absolute path to the exact reviewed manifest file. The renderer preserves its bytes in the generated Compose config mounted into both services. |
 | `PRIVATEMODE_MANIFEST_SHA256` | Used by `deploy/compose.privatemode.yaml` to pin those exact manifest bytes in static gateway policy. |
 | `PRIVATEMODE_CREDENTIAL_SHA256` | Used by `deploy/compose.privatemode.yaml` to bind the one accepted Privatemode API credential without placing the credential itself in measured config. |
