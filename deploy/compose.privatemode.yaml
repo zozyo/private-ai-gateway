@@ -41,6 +41,7 @@ services:
     image: ghcr.io/edgelesssys/privatemode/privatemode-proxy@sha256:ff900b263a51a437633d15da809e7893a31fa4b1f4acfa4e526c075682d84307
     labels:
       ai.private-gateway.privatemode-manifest-sha256: ${PRIVATEMODE_MANIFEST_SHA256:?set PRIVATEMODE_MANIFEST_SHA256 to the reviewed manifest digest}
+      ai.private-gateway.privatemode-credential-sha256: ${PRIVATEMODE_CREDENTIAL_SHA256:?set PRIVATEMODE_CREDENTIAL_SHA256 to the API credential digest}
     command:
       - --manifestPath
       - /run/privatemode/manifest.json

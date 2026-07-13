@@ -92,6 +92,17 @@ fn privatemode_renderer_preserves_exact_manifest_bytes() {
 #[test]
 fn privatemode_config_pins_force_container_reconciliation() {
     let body = privatemode_compose_text();
+    let gateway = body
+        .split("\n  private-ai-gateway:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  privatemode-proxy:\n").next())
+        .expect("compose must declare a private-ai-gateway service");
+    let proxy = body
+        .split("\n  privatemode-proxy:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\nconfigs:\n").next())
+        .expect("compose must declare a privatemode-proxy service");
+
     for pin in [
         "ai.private-gateway.source-commit",
         "ai.private-gateway.admin-token-sha256",
@@ -99,8 +110,17 @@ fn privatemode_config_pins_force_container_reconciliation() {
         "ai.private-gateway.privatemode-credential-sha256",
     ] {
         assert!(
-            body.contains(pin),
-            "Privatemode service labels must include {pin} so an inline config change recreates stale containers"
+            gateway.contains(pin),
+            "gateway service labels must include {pin} so an inline config change recreates a stale container"
+        );
+    }
+    for pin in [
+        "ai.private-gateway.privatemode-manifest-sha256",
+        "ai.private-gateway.privatemode-credential-sha256",
+    ] {
+        assert!(
+            proxy.contains(pin),
+            "proxy service labels must include {pin} so startup manifest or credential changes recreate a stale proxy"
         );
     }
 }
