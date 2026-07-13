@@ -67,6 +67,9 @@ credential digest, admin-token digest, image digest, and git commit are part of
 the measured Compose. The admin token itself is deliberately absent from the
 rendered file and is passed through Phala's encrypted environment instead. The
 gateway checks it against the measured digest before enabling the admin API.
+Those non-secret content pins are also service labels, ensuring Compose
+recreates both services when a mounted inline config changes instead of
+restarting a container with stale config bytes.
 
 That compose pins
 `ghcr.io/edgelesssys/privatemode/privatemode-proxy` at OCI digest

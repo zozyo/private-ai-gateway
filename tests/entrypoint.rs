@@ -69,6 +69,22 @@ fn privatemode_gateway_and_proxy_share_measured_pins() {
 }
 
 #[test]
+fn privatemode_config_pins_force_container_reconciliation() {
+    let body = privatemode_compose_text();
+    for pin in [
+        "ai.private-gateway.source-commit",
+        "ai.private-gateway.admin-token-sha256",
+        "ai.private-gateway.privatemode-manifest-sha256",
+        "ai.private-gateway.privatemode-credential-sha256",
+    ] {
+        assert!(
+            body.contains(pin),
+            "Privatemode service labels must include {pin} so an inline config change recreates stale containers"
+        );
+    }
+}
+
+#[test]
 fn entrypoint_sh_exists_and_is_executable() {
     let p = script_path();
     assert!(p.exists(), "{} must exist", p.display());

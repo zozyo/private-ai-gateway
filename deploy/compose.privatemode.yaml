@@ -5,6 +5,14 @@ services:
   private-ai-gateway:
     image: docker.io/dstacktee/git-launcher@sha256:4437dce18ec713b0991d34bd926d324966b1a0b90fad485b8ddb3f4ed2af138b
     command: ["/etc/git-launcher/gateway.conf"]
+    # Compose identifies mounted configs by source name, so also bind their
+    # immutable content pins into the service definition. A pin change then
+    # recreates the container instead of restarting it with stale config bytes.
+    labels:
+      ai.private-gateway.source-commit: ${PRIVATE_AI_GATEWAY_REPO_COMMIT:?set PRIVATE_AI_GATEWAY_REPO_COMMIT to the audited full commit SHA}
+      ai.private-gateway.admin-token-sha256: ${PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256:?set measured PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256}
+      ai.private-gateway.privatemode-manifest-sha256: ${PRIVATEMODE_MANIFEST_SHA256:?set PRIVATEMODE_MANIFEST_SHA256 to the reviewed manifest digest}
+      ai.private-gateway.privatemode-credential-sha256: ${PRIVATEMODE_CREDENTIAL_SHA256:?set PRIVATEMODE_CREDENTIAL_SHA256 to the API credential digest}
     ports:
       - "8086:8086"
     configs:
@@ -31,6 +39,8 @@ services:
 
   privatemode-proxy:
     image: ghcr.io/edgelesssys/privatemode/privatemode-proxy@sha256:ff900b263a51a437633d15da809e7893a31fa4b1f4acfa4e526c075682d84307
+    labels:
+      ai.private-gateway.privatemode-manifest-sha256: ${PRIVATEMODE_MANIFEST_SHA256:?set PRIVATEMODE_MANIFEST_SHA256 to the reviewed manifest digest}
     command:
       - --manifestPath
       - /run/privatemode/manifest.json
