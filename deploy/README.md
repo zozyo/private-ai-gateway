@@ -305,9 +305,10 @@ config is part of the trust surface.
 
 ## Toolchain Posture
 
-The current `entrypoint.sh` can bootstrap Rust with apt + rustup inside the
-TEE. That keeps the first deploy path simple, but it is a development-grade
-trust surface.
+The current `entrypoint.sh` can bootstrap a missing native compiler/linker
+with apt + build-essential and Rust with apt + rustup inside the TEE. That
+keeps the first deploy path simple, but it is a development-grade trust
+surface.
 
 The production target is a gateway-owned image that already contains the
 Rust toolchain, or eventually the prebuilt gateway binary. The launcher still

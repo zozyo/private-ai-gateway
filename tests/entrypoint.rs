@@ -167,6 +167,10 @@ fn entrypoint_sh_apt_install_is_strict() {
         "apt-get install line must use --no-install-recommends to keep the trust surface minimal"
     );
     assert!(
+        body.contains("command -v cc") && body.contains("apt_packages+=(build-essential)"),
+        "entrypoint.sh must install a native compiler/linker when the launcher image only supplies Rust"
+    );
+    assert!(
         body.contains("rustup default stable"),
         "entrypoint.sh must call `rustup default stable` after toolchain install"
     );
