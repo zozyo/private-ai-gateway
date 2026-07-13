@@ -116,11 +116,26 @@ legacy deployment fields in mutable upstream config, and deployment tests pin
 the official image while ensuring its port is not published.
 
 The earlier child-supervisor prototype was exercised end to end against the
-production service on 2026-07-10 with a real API key and the official v1.48.0
-binary. That established compatibility with the live Contrast verification,
-secret exchange, chat, and receipt path, but its process-management boundary is
-no longer part of the adapter. A live run of the replacement Compose boundary
-must accompany its deployment review.
+production service on 2026-07-10, but that process-management boundary is no
+longer part of the adapter. The replacement boundary was deployed and tested on
+Phala Cloud on 2026-07-13:
+
+- CVM `d0639110-1749-4c8f-9d1c-b49bb50afe32`, app ID
+  `900ea355e7a448a2b27ad0a361eb6d71959bd8eb`, ran gateway commit
+  `957b66aec31105a9fa6ca195536338443a24a055` under measured Compose hash
+  `36b3611cdad52124bd5218bb4ccae84200c75dc91d9cc4bda045b79f2084fab1`.
+- The official v1.48.0 proxy loaded the Clawdi-vault-backed API key from a
+  Compose secret, verified the production SNP report, accepted the exact
+  reviewed manifest, obtained its inference secret, and returned HTTP 200 from
+  its authenticated model-list probe.
+- A real `gpt-oss-120b` chat returned HTTP 200 and exactly
+  `compose-sidecar-live-ok`. Signed receipt
+  `rcpt-11a09da8994a59a5826d08a8` recorded the internal origin, manifest SHA-256
+  `b4a4e1c372a507a1771f7f2f9b7c2fa7f04202855588e26f795d0249454572bf`,
+  Coordinator policy
+  `180d10463bdeccaf6c0ae6e0c01d26149f7cd1d2c1b2b4f3352224ef4510b9bf`,
+  and proxy image digest
+  `sha256:ff900b263a51a437633d15da809e7893a31fa4b1f4acfa4e526c075682d84307`.
 
 ## Adapter decision
 
