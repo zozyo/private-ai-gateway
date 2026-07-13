@@ -76,6 +76,8 @@ and set the reviewed manifest file and digest before deployment:
 export PRIVATE_AI_GATEWAY_REPO_COMMIT=<audited-commit>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<admin-token>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256="$(printf %s "$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)"
+export PRIVATE_AI_GATEWAY_INFERENCE_TOKEN=<long-random-client-token>
+export PRIVATE_AI_GATEWAY_INFERENCE_TOKEN_SHA256="$(printf %s "$PRIVATE_AI_GATEWAY_INFERENCE_TOKEN" | sha256sum | cut -d' ' -f1)"
 export PRIVATEMODE_API_KEY=<privatemode-api-key>
 export PRIVATEMODE_MANIFEST_PATH=/absolute/path/to/exact-reviewed-manifest.json
 export PRIVATEMODE_CREDENTIAL_SHA256="$(printf %s "$PRIVATEMODE_API_KEY" | sha256sum | cut -d' ' -f1)"
@@ -90,10 +92,13 @@ phala-h4xuser deploy -n private-ai-gateway \
 Rendering makes the exact manifest bytes and non-secret pins part of the
 measured Compose. The renderer verifies that inline serialization preserves the
 manifest file's SHA-256, including its whitespace and final newline.
-Both secrets remain outside it and enter only through the encrypted deployment
-environment. Compose mounts the Privatemode key as a secret file for the
-official proxy's `--apiKey @<file>` interface. Their measured SHA-256 policies
-prevent an untrusted host from substituting credentials it knows.
+The admin and Privatemode secrets remain outside it and enter only through the
+encrypted deployment environment. Compose mounts the Privatemode key as a
+secret file for the official proxy's `--apiKey @<file>` interface. Their
+measured SHA-256 policies prevent an untrusted host from substituting
+credentials it knows. The downstream inference token never enters the
+deployment: only its digest is measured, and clients present the token as a
+Bearer credential on every inference request.
 
 The measured static gateway config has this shape:
 

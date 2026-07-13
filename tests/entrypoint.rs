@@ -67,6 +67,7 @@ fn privatemode_gateway_and_proxy_share_measured_pins() {
     assert!(body.contains("PRIVATEMODE_CREDENTIAL_SHA256:?"));
     assert!(body.contains("PRIVATEMODE_MANIFEST_PATH:?"));
     assert!(body.contains("PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256:?"));
+    assert!(body.contains("PRIVATE_AI_GATEWAY_INFERENCE_TOKEN_SHA256:?"));
     assert!(body.contains("/dstack/.host-shared/.decrypted-env"));
     assert!(body.contains("PRIVATE_AI_GATEWAY_ENV_FILE: /run/secrets/dstack-encrypted-env"));
     assert!(!body.contains(r#""admin_token": "${PRIVATE_AI_GATEWAY_ADMIN_TOKEN"#));
@@ -80,7 +81,16 @@ fn privatemode_renderer_preserves_exact_manifest_bytes() {
     assert!(body.contains("jq --rawfile manifest"));
     assert!(body.contains("jq -j"));
     assert!(body.contains("rendered_manifest_sha256"));
-    assert!(body.contains("PRIVATE_AI_GATEWAY_ADMIN_TOKEN PRIVATEMODE_API_KEY"));
+    for secret in [
+        "PRIVATE_AI_GATEWAY_ADMIN_TOKEN",
+        "PRIVATE_AI_GATEWAY_INFERENCE_TOKEN",
+        "PRIVATEMODE_API_KEY",
+    ] {
+        assert!(
+            body.contains(secret),
+            "renderer must reject embedding {secret}"
+        );
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -106,6 +116,7 @@ fn privatemode_config_pins_force_container_reconciliation() {
     for pin in [
         "ai.private-gateway.source-commit",
         "ai.private-gateway.admin-token-sha256",
+        "ai.private-gateway.inference-token-sha256",
         "ai.private-gateway.privatemode-manifest-sha256",
         "ai.private-gateway.privatemode-credential-sha256",
     ] {

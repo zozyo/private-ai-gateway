@@ -50,6 +50,8 @@ lists all inputs.
 export PRIVATE_AI_GATEWAY_REPO_COMMIT=<full-40-hex-sha>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<long-random-admin-token>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256="$(printf %s "$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)"
+export PRIVATE_AI_GATEWAY_INFERENCE_TOKEN=<long-random-client-token>
+export PRIVATE_AI_GATEWAY_INFERENCE_TOKEN_SHA256="$(printf %s "$PRIVATE_AI_GATEWAY_INFERENCE_TOKEN" | sha256sum | cut -d' ' -f1)"
 export PRIVATEMODE_API_KEY=<privatemode-api-key>
 export PRIVATEMODE_MANIFEST_PATH=/absolute/path/to/exact-reviewed-manifest.json
 export PRIVATEMODE_CREDENTIAL_SHA256="$(printf %s "$PRIVATEMODE_API_KEY" | sha256sum | cut -d' ' -f1)"
@@ -62,9 +64,12 @@ phala-h4xuser deploy -n private-ai-gateway \
 ```
 
 Render before deployment so the exact byte-for-byte manifest, its digest, the
-credential digest, admin-token digest, image digest, and git commit are part of
-the measured Compose. The admin token itself is deliberately absent from the
-rendered file and is passed through Phala's encrypted environment instead. The
+credential digest, admin-token digest, downstream inference-token digest,
+image digest, and git commit are part of the measured Compose. The admin token
+itself is deliberately absent from the rendered file and is passed through
+Phala's encrypted environment instead. The downstream inference token remains
+client-side and is not passed to the deployment; callers send it as the Bearer
+credential on inference requests. The
 Privatemode API key follows the same path into a Compose-managed secret file;
 the proxy reads that file through its official `--apiKey @<file>` interface.
 The gateway checks both secrets against their measured digests before use.
@@ -94,7 +99,11 @@ pass them through the deployment secret mechanism.
 `compose.yaml` inlines the launcher config, the static gateway config, and the
 initial upstream config. dstack therefore measures the whole launch policy into
 `compose_hash`.
-After deployment, the gateway listens on port `8086`.
+After deployment, the gateway listens on port `8086`. The Privatemode variant
+rejects inference requests unless `Authorization: Bearer
+$PRIVATE_AI_GATEWAY_INFERENCE_TOKEN` hashes to the digest measured in its
+static config. Health, attestation, transparency, and model-catalog endpoints
+remain public; the admin API uses its separate admin token.
 
 The gateway consumes two JSON files:
 

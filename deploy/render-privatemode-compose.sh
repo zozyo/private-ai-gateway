@@ -17,6 +17,7 @@ output=$1
 for name in \
   PRIVATE_AI_GATEWAY_REPO_COMMIT \
   PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256 \
+  PRIVATE_AI_GATEWAY_INFERENCE_TOKEN_SHA256 \
   PRIVATEMODE_MANIFEST_PATH \
   PRIVATEMODE_CREDENTIAL_SHA256
 do
@@ -55,7 +56,11 @@ rendered_manifest_sha256=$(
 [[ $rendered_manifest_sha256 == "$PRIVATEMODE_MANIFEST_SHA256" ]] \
   || die "rendered manifest digest changed: expected $PRIVATEMODE_MANIFEST_SHA256, got $rendered_manifest_sha256"
 
-for secret_name in PRIVATE_AI_GATEWAY_ADMIN_TOKEN PRIVATEMODE_API_KEY; do
+for secret_name in \
+  PRIVATE_AI_GATEWAY_ADMIN_TOKEN \
+  PRIVATE_AI_GATEWAY_INFERENCE_TOKEN \
+  PRIVATEMODE_API_KEY
+do
   secret_value=${!secret_name:-}
   if [[ -n $secret_value ]] && grep -Fq -- "$secret_value" "$tmp"; then
     die "$secret_name was embedded in the rendered Compose"

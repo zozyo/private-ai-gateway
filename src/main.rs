@@ -83,8 +83,20 @@ fn validate_sha256_secret_policy(
     secret: Option<&str>,
     expected: Option<&str>,
 ) -> Result<(), String> {
-    let Some(expected) = expected else {
+    let Some(expected_bytes) = parse_sha256_policy(name, expected)? else {
         return Ok(());
+    };
+    let secret = secret.ok_or_else(|| format!("{name}_sha256 requires {name}"))?;
+    let actual: [u8; 32] = Sha256::digest(secret.as_bytes()).into();
+    if actual != expected_bytes {
+        return Err(format!("{name} does not match static {name}_sha256 policy"));
+    }
+    Ok(())
+}
+
+fn parse_sha256_policy(name: &str, expected: Option<&str>) -> Result<Option<[u8; 32]>, String> {
+    let Some(expected) = expected else {
+        return Ok(None);
     };
     let expected = expected
         .trim()
@@ -92,18 +104,15 @@ fn validate_sha256_secret_policy(
         .unwrap_or(expected.trim());
     let expected_bytes =
         hex::decode(expected).map_err(|err| format!("invalid {name}_sha256: {err}"))?;
-    if expected_bytes.len() != 32 {
-        return Err(format!(
-            "invalid {name}_sha256: expected 32 bytes, got {}",
-            expected_bytes.len()
-        ));
-    }
-    let secret = secret.ok_or_else(|| format!("{name}_sha256 requires {name}"))?;
-    let actual: [u8; 32] = Sha256::digest(secret.as_bytes()).into();
-    if actual.as_slice() != expected_bytes.as_slice() {
-        return Err(format!("{name} does not match static {name}_sha256 policy"));
-    }
-    Ok(())
+    expected_bytes
+        .try_into()
+        .map(Some)
+        .map_err(|bytes: Vec<u8>| {
+            format!(
+                "invalid {name}_sha256: expected 32 bytes, got {}",
+                bytes.len()
+            )
+        })
 }
 
 fn invalid_input(message: impl Into<String>) -> std::io::Error {
@@ -118,6 +127,9 @@ struct GatewayConfigFile {
     upstream_config_seed_path: Option<String>,
     admin_token: Option<String>,
     admin_token_sha256: Option<String>,
+    /// Optional measured digest of the downstream bearer accepted by inference
+    /// endpoints. The bearer itself remains client-side.
+    inference_token_sha256: Option<String>,
     /// Bounded keyset-epoch validity window in seconds (§4.7). Defaults to
     /// [`DEFAULT_KEYSET_EPOCH_WINDOW_SECONDS`] (~4 weeks).
     keyset_epoch_window_seconds: Option<u64>,
@@ -425,6 +437,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gateway_config.admin_token_sha256.as_deref(),
     )
     .map_err(invalid_input)?;
+    let inference_token_sha256 = parse_sha256_policy(
+        "inference_token",
+        gateway_config.inference_token_sha256.as_deref(),
+    )
+    .map_err(invalid_input)?;
     let source_provenance = resolve_source_provenance()?;
     let tls_public_keys = resolve_tls_public_keys(&gateway_config.tls)?;
     let dstack_endpoint = gateway_config.dstack_endpoint.clone();
@@ -592,9 +609,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             control_url = %middleware_config.control_url,
             "private-ai-gateway middleware enabled"
         );
-        build_router_with_admin_and_middleware(service, upstream_config, admin_token, middleware)
+        build_router_with_admin_and_middleware(
+            service,
+            upstream_config,
+            admin_token,
+            inference_token_sha256,
+            middleware,
+        )
     } else {
-        build_router_with_admin(service, upstream_config, admin_token)
+        build_router_with_admin(
+            service,
+            upstream_config,
+            admin_token,
+            inference_token_sha256,
+        )
     };
 
     tracing::info!(%bind, "private-ai-gateway listening");
@@ -718,8 +746,9 @@ mod tests {
     use private_ai_gateway::aggregator::upstream_config::{parse_config_text, UpstreamProvider};
 
     use super::{
-        env_file_non_empty, keyset_epoch_path, load_gateway_config, resolve_state_dir,
-        resolve_tls_public_keys, revocations_path, seed_upstream_config_if_empty, session_log_path,
+        env_file_non_empty, keyset_epoch_path, load_gateway_config, parse_sha256_policy,
+        resolve_state_dir, resolve_tls_public_keys, revocations_path,
+        seed_upstream_config_if_empty, session_log_path,
         source_provenance_from_git_launcher_config, upstream_config_path,
         validate_sha256_secret_policy,
     };
@@ -775,6 +804,23 @@ kBH1U3IsAJyU8UbZqzFEUGG7Ro3vdOQ=
             .unwrap_err();
         assert!(err.contains("does not match static admin_token_sha256"));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn inference_token_digest_policy_is_validated_without_loading_the_secret() {
+        let prefixed = private_ai_gateway::aci::canonical::sha256_hex(b"client token");
+        let digest = prefixed.strip_prefix("sha256:").unwrap();
+        let parsed = parse_sha256_policy("inference_token", Some(digest))
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.as_slice(), hex::decode(digest).unwrap());
+
+        assert_eq!(
+            parse_sha256_policy("inference_token", Some(&prefixed)).unwrap(),
+            Some(parsed)
+        );
+        let err = parse_sha256_policy("inference_token", Some("00")).unwrap_err();
+        assert!(err.contains("expected 32 bytes"));
     }
 
     fn temp_path(name: &str) -> std::path::PathBuf {

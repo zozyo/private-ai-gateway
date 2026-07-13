@@ -122,7 +122,7 @@ async fn relays_catalogs_from_control() {
         .unwrap(),
     );
     let (service, manager) = build_service();
-    let app = build_router_with_admin_and_middleware(service, manager, None, middleware);
+    let app = build_router_with_admin_and_middleware(service, manager, None, None, middleware);
 
     let (status, body) = get_json(app.clone(), "/v1/models").await;
     assert_eq!(status, StatusCode::OK);
@@ -140,7 +140,7 @@ async fn relays_catalogs_from_control() {
 #[tokio::test]
 async fn direct_mode_sub_catalogs_remain_not_found() {
     let (service, manager) = build_service();
-    let app = build_router_with_admin(service, manager, None);
+    let app = build_router_with_admin(service, manager, None, None);
 
     let (status, _) = get_json(app.clone(), "/v1/models/my-namespace").await;
     assert_eq!(status, StatusCode::NOT_FOUND);

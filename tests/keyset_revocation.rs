@@ -75,7 +75,7 @@ fn build_harness(dir: &std::path::Path) -> Harness {
         .with_revocation_store(revocation_store),
     );
     Harness {
-        app: build_router_with_admin(service, manager, Some(ADMIN_TOKEN.to_string())),
+        app: build_router_with_admin(service, manager, Some(ADMIN_TOKEN.to_string()), None),
         revocations_path,
     }
 }

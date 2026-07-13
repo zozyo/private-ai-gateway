@@ -87,7 +87,7 @@ async fn admin_can_replace_single_upstream_config_file_at_runtime() {
         )
         .unwrap(),
     );
-    let app = build_router_with_admin(service, manager, Some("admin-secret".to_string()));
+    let app = build_router_with_admin(service, manager, Some("admin-secret".to_string()), None);
 
     let (status, models) = call(app.clone(), "GET", "/v1/models", Vec::new(), None).await;
     assert_eq!(status, StatusCode::OK);

@@ -43,6 +43,7 @@ This is the smallest practical container config.
 | `upstream_config_seed_path` | unset | Read-only JSON seed copied to `<state_dir>/upstreams.json` only when the active upstream config is missing or empty. |
 | `admin_token` | unset | Bearer token for `GET` and `PUT /v1/admin/upstreams`. When unset, the admin API is not exposed. |
 | `admin_token_sha256` | unset | Optional SHA-256 policy for the admin token supplied by config or `PRIVATE_AI_GATEWAY_ADMIN_TOKEN`. Startup fails on a missing or mismatched token. |
+| `inference_token_sha256` | unset | Optional SHA-256 of the downstream bearer accepted by inference POST endpoints. The high-entropy bearer remains client-side; when this field is set, missing or mismatched credentials are rejected before request parsing or forwarding. |
 | `dstack_endpoint` | dstack SDK default | dstack SDK endpoint, such as `unix:/var/run/dstack.sock`. |
 | `middleware` | unset | Optional middleware section. When present, the gateway consults a control plane to route and authorize each request and applies request/response transforms; when unset it serves directly. See [Middleware](#middleware). |
 | `privatemode_proxy` | unset | Static policy for an official Privatemode proxy co-deployed in the same measured dstack Compose. Required before a `privatemode` route can load. |
@@ -223,6 +224,7 @@ Deployment tooling also uses these variables:
 | `PRIVATE_AI_GATEWAY_REPO_COMMIT` | Used by `deploy/compose.yaml` interpolation for the git-launcher `COMMIT_SHA` pin. |
 | `PRIVATE_AI_GATEWAY_ADMIN_TOKEN` | `deploy/compose.yaml` interpolates this legacy input; `compose.privatemode.yaml` instead reads it from dstack's TEE-internal decrypted environment file. |
 | `PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256` | Non-secret digest rendered into `compose.privatemode.yaml`; binds the encrypted admin token to measured static policy. |
+| `PRIVATE_AI_GATEWAY_INFERENCE_TOKEN_SHA256` | Non-secret digest rendered into `compose.privatemode.yaml`; binds the client-held bearer required by paid inference endpoints. |
 | `PRIVATEMODE_MANIFEST_PATH` | Absolute path to the exact reviewed manifest file. The renderer preserves its bytes in the generated Compose config mounted into both services. |
 | `PRIVATEMODE_MANIFEST_SHA256` | Used by `deploy/compose.privatemode.yaml` to pin those exact manifest bytes in static gateway policy. |
 | `PRIVATEMODE_CREDENTIAL_SHA256` | Used by `deploy/compose.privatemode.yaml` to bind the one accepted Privatemode API credential without placing the credential itself in measured config. |
