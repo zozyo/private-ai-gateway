@@ -19,6 +19,7 @@ services:
     environment:
       PRIVATE_AI_GATEWAY_CONFIG_PATH: /etc/private-ai-gateway/gateway.config.json
       PRIVATE_AI_GATEWAY_CACHE_DIR: /var/lib/private-ai-gateway/cache
+      PRIVATE_AI_GATEWAY_ADMIN_TOKEN:
     volumes:
       - gateway-checkout:/var/lib/git-launcher
       - gateway-state:/var/lib/private-ai-gateway
@@ -58,7 +59,6 @@ configs:
         "bind": "0.0.0.0:8086",
         "state_dir": "/var/lib/private-ai-gateway",
         "upstream_config_seed_path": "/etc/private-ai-gateway/upstreams.seed.json",
-        "admin_token": "${PRIVATE_AI_GATEWAY_ADMIN_TOKEN:?set PRIVATE_AI_GATEWAY_ADMIN_TOKEN}",
         "dstack_endpoint": "unix:/var/run/dstack.sock",
         "privatemode_proxy": {
           "base_url": "http://privatemode-proxy:8080",
@@ -74,7 +74,7 @@ configs:
       []
 
   privatemode-manifest:
-    file: ${PRIVATEMODE_MANIFEST_PATH:?set PRIVATEMODE_MANIFEST_PATH to the reviewed manifest file}
+    content: ${PRIVATEMODE_MANIFEST_JSON:?set PRIVATEMODE_MANIFEST_JSON to compact reviewed manifest JSON}
 
 volumes:
   gateway-checkout:

@@ -73,15 +73,23 @@ Use [`deploy/compose.privatemode.yaml`](../../../deploy/compose.privatemode.yaml
 and set the reviewed manifest file and digest before deployment:
 
 ```bash
-sha256sum /absolute/path/to/manifest.json
+export PRIVATE_AI_GATEWAY_REPO_COMMIT=<audited-commit>
+export PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<admin-token>
+export PRIVATEMODE_MANIFEST_JSON="$(jq -c . /absolute/path/to/manifest.json)"
+export PRIVATEMODE_MANIFEST_SHA256="$(printf %s "$PRIVATEMODE_MANIFEST_JSON" | sha256sum | cut -d' ' -f1)"
+export PRIVATEMODE_CREDENTIAL_SHA256=<sha256-of-privatemode-api-key>
 
-PRIVATE_AI_GATEWAY_REPO_COMMIT=<audited-commit> \
-PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<admin-token> \
-PRIVATEMODE_MANIFEST_PATH=/absolute/path/to/manifest.json \
-PRIVATEMODE_MANIFEST_SHA256=<64-hex-digest> \
-PRIVATEMODE_CREDENTIAL_SHA256=<sha256-of-privatemode-api-key> \
-phala-h4xuser deploy -n private-ai-gateway -c compose.privatemode.yaml
+env -u PRIVATE_AI_GATEWAY_ADMIN_TOKEN \
+  docker compose -f deploy/compose.privatemode.yaml config \
+  -o /tmp/private-ai-gateway-privatemode.yaml
+phala-h4xuser deploy -n private-ai-gateway \
+  -c /tmp/private-ai-gateway-privatemode.yaml \
+  -e PRIVATE_AI_GATEWAY_ADMIN_TOKEN="$PRIVATE_AI_GATEWAY_ADMIN_TOKEN"
 ```
+
+Rendering makes the manifest and non-secret pins part of the measured Compose.
+The admin token remains outside it and enters only through the encrypted
+deployment environment.
 
 The measured static gateway config has this shape:
 

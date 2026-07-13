@@ -60,7 +60,9 @@ fn privatemode_gateway_and_proxy_share_measured_pins() {
     assert!(body.contains(r#""manifest_path": "/run/privatemode/manifest.json""#));
     assert!(body.contains("PRIVATEMODE_MANIFEST_SHA256:?"));
     assert!(body.contains("PRIVATEMODE_CREDENTIAL_SHA256:?"));
-    assert!(body.contains("PRIVATEMODE_MANIFEST_PATH:?"));
+    assert!(body.contains("PRIVATEMODE_MANIFEST_JSON:?"));
+    assert!(body.contains("PRIVATE_AI_GATEWAY_ADMIN_TOKEN:"));
+    assert!(!body.contains(r#""admin_token": "${PRIVATE_AI_GATEWAY_ADMIN_TOKEN"#));
     assert_eq!(body.matches("source: privatemode-manifest").count(), 2);
 }
 

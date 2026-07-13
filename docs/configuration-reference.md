@@ -207,6 +207,7 @@ bridges may consume provider-specific environment variables such as
 | Variable | Use |
 | --- | --- |
 | `PRIVATE_AI_GATEWAY_CONFIG_PATH` | Required. Selects the static gateway config file. |
+| `PRIVATE_AI_GATEWAY_ADMIN_TOKEN` | Optional runtime secret overriding static `admin_token`; the Privatemode Compose inherits it from the encrypted deployment environment so it is not disclosed by measured Compose source. |
 | `RUST_LOG` | Tracing filter consumed by `tracing_subscriber`. |
 
 Deployment tooling also uses these variables:
@@ -218,7 +219,7 @@ Deployment tooling also uses these variables:
 | `RUSTUP_HOME` | Optional override for Rustup state. Defaults under `PRIVATE_AI_GATEWAY_CACHE_DIR`. |
 | `CARGO_TARGET_DIR` | Optional override for Cargo build output. Defaults under `PRIVATE_AI_GATEWAY_CACHE_DIR`. |
 | `PRIVATE_AI_GATEWAY_REPO_COMMIT` | Used by `deploy/compose.yaml` interpolation for the git-launcher `COMMIT_SHA` pin. |
-| `PRIVATE_AI_GATEWAY_ADMIN_TOKEN` | Used by `deploy/compose.yaml` interpolation for the static config's `admin_token`. |
-| `PRIVATEMODE_MANIFEST_PATH` | Used by `deploy/compose.privatemode.yaml` to mount the reviewed manifest into both services. |
+| `PRIVATE_AI_GATEWAY_ADMIN_TOKEN` | `deploy/compose.yaml` interpolates this legacy input; `compose.privatemode.yaml` instead inherits it at runtime from the encrypted deployment environment. |
+| `PRIVATEMODE_MANIFEST_JSON` | Compact reviewed manifest embedded into the rendered `deploy/compose.privatemode.yaml` config and mounted into both services. |
 | `PRIVATEMODE_MANIFEST_SHA256` | Used by `deploy/compose.privatemode.yaml` to pin those exact manifest bytes in static gateway policy. |
 | `PRIVATEMODE_CREDENTIAL_SHA256` | Used by `deploy/compose.privatemode.yaml` to bind the one accepted Privatemode API credential without placing the credential itself in measured config. |

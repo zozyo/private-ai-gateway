@@ -366,7 +366,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let upstream_config_path = upstream_config_path(&state_dir);
     let session_log_path = session_log_path(&state_dir);
     let upstream_config_seed_path = gateway_config.upstream_config_seed_path.clone();
-    let admin_token = gateway_config.admin_token.clone();
+    let admin_token = env_non_empty("PRIVATE_AI_GATEWAY_ADMIN_TOKEN")
+        .or_else(|| gateway_config.admin_token.clone());
     let source_provenance = resolve_source_provenance()?;
     let tls_public_keys = resolve_tls_public_keys(&gateway_config.tls)?;
     let dstack_endpoint = gateway_config.dstack_endpoint.clone();

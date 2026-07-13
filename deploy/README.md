@@ -47,13 +47,24 @@ file and its digest; [`privatemode.env.example`](./privatemode.env.example)
 lists all inputs.
 
 ```bash
-PRIVATE_AI_GATEWAY_REPO_COMMIT=<full-40-hex-sha> \
-PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<long-random-admin-token> \
-PRIVATEMODE_MANIFEST_PATH=/absolute/path/to/manifest.json \
-PRIVATEMODE_MANIFEST_SHA256=<64-hex-digest> \
-PRIVATEMODE_CREDENTIAL_SHA256=<sha256-of-privatemode-api-key> \
-phala-h4xuser deploy -n private-ai-gateway -c compose.privatemode.yaml
+export PRIVATE_AI_GATEWAY_REPO_COMMIT=<full-40-hex-sha>
+export PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<long-random-admin-token>
+export PRIVATEMODE_MANIFEST_JSON="$(jq -c . /absolute/path/to/manifest.json)"
+export PRIVATEMODE_MANIFEST_SHA256="$(printf %s "$PRIVATEMODE_MANIFEST_JSON" | sha256sum | cut -d' ' -f1)"
+export PRIVATEMODE_CREDENTIAL_SHA256=<sha256-of-privatemode-api-key>
+
+env -u PRIVATE_AI_GATEWAY_ADMIN_TOKEN \
+  docker compose -f compose.privatemode.yaml config \
+  -o /tmp/private-ai-gateway-privatemode.yaml
+phala-h4xuser deploy -n private-ai-gateway \
+  -c /tmp/private-ai-gateway-privatemode.yaml \
+  -e PRIVATE_AI_GATEWAY_ADMIN_TOKEN="$PRIVATE_AI_GATEWAY_ADMIN_TOKEN"
 ```
+
+Render before deployment so the exact compact manifest, its digest, the
+credential digest, image digest, and git commit are part of the measured
+Compose. The admin token is deliberately absent from the rendered file and is
+passed through Phala's encrypted environment instead.
 
 That compose pins
 `ghcr.io/edgelesssys/privatemode/privatemode-proxy` at OCI digest
@@ -67,10 +78,9 @@ and then adding the route with the new key. An admin config replacement or
 gateway-only restart is rejected.
 
 For local/dev deploys, you can also copy
-[`gateway.env.example`](./gateway.env.example), export those values from your
-shell, and run the same `phala-h4xuser deploy` command. For production, pass
-secrets such as admin tokens through the deployment secret mechanism rather
-than keeping them in a plaintext env file.
+[`gateway.env.example`](./gateway.env.example) and export those values from
+your shell. Keep secrets such as admin tokens out of the rendered Compose and
+pass them through the deployment secret mechanism.
 
 `compose.yaml` inlines the launcher config, the static gateway config, and the
 initial upstream config. dstack therefore measures the whole launch policy into
