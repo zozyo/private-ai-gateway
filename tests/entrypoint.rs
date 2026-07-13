@@ -65,12 +65,28 @@ fn privatemode_gateway_and_proxy_share_measured_pins() {
     assert!(body.contains(r#""manifest_path": "/run/privatemode/manifest.json""#));
     assert!(body.contains("PRIVATEMODE_MANIFEST_SHA256:?"));
     assert!(body.contains("PRIVATEMODE_CREDENTIAL_SHA256:?"));
-    assert!(body.contains("PRIVATEMODE_MANIFEST_JSON:?"));
+    assert!(body.contains("PRIVATEMODE_MANIFEST_PATH:?"));
     assert!(body.contains("PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256:?"));
     assert!(body.contains("/dstack/.host-shared/.decrypted-env"));
     assert!(body.contains("PRIVATE_AI_GATEWAY_ENV_FILE: /run/secrets/dstack-encrypted-env"));
     assert!(!body.contains(r#""admin_token": "${PRIVATE_AI_GATEWAY_ADMIN_TOKEN"#));
     assert_eq!(body.matches("source: privatemode-manifest").count(), 2);
+}
+
+#[test]
+fn privatemode_renderer_preserves_exact_manifest_bytes() {
+    let path = repo_root().join("deploy/render-privatemode-compose.sh");
+    let body = std::fs::read_to_string(&path).expect("Privatemode renderer must exist");
+    assert!(body.contains("jq --rawfile manifest"));
+    assert!(body.contains("jq -j"));
+    assert!(body.contains("rendered_manifest_sha256"));
+    assert!(body.contains("PRIVATE_AI_GATEWAY_ADMIN_TOKEN PRIVATEMODE_API_KEY"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path).unwrap().permissions().mode();
+        assert_ne!(mode & 0o111, 0, "Privatemode renderer must be executable");
+    }
 }
 
 #[test]

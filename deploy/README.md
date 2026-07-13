@@ -51,26 +51,26 @@ export PRIVATE_AI_GATEWAY_REPO_COMMIT=<full-40-hex-sha>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<long-random-admin-token>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256="$(printf %s "$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)"
 export PRIVATEMODE_API_KEY=<privatemode-api-key>
-export PRIVATEMODE_MANIFEST_JSON="$(jq -c . /absolute/path/to/manifest.json)"
-export PRIVATEMODE_MANIFEST_SHA256="$(printf %s "$PRIVATEMODE_MANIFEST_JSON" | sha256sum | cut -d' ' -f1)"
+export PRIVATEMODE_MANIFEST_PATH=/absolute/path/to/exact-reviewed-manifest.json
 export PRIVATEMODE_CREDENTIAL_SHA256="$(printf %s "$PRIVATEMODE_API_KEY" | sha256sum | cut -d' ' -f1)"
 
-env -u PRIVATE_AI_GATEWAY_ADMIN_TOKEN \
-  docker compose -f compose.privatemode.yaml config \
-  -o /tmp/private-ai-gateway-privatemode.yaml
+./render-privatemode-compose.sh /tmp/private-ai-gateway-privatemode.json
 phala-h4xuser deploy -n private-ai-gateway \
-  -c /tmp/private-ai-gateway-privatemode.yaml \
+  -c /tmp/private-ai-gateway-privatemode.json \
   -e PRIVATE_AI_GATEWAY_ADMIN_TOKEN="$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" \
   -e PRIVATEMODE_API_KEY="$PRIVATEMODE_API_KEY"
 ```
 
-Render before deployment so the exact compact manifest, its digest, the
+Render before deployment so the exact byte-for-byte manifest, its digest, the
 credential digest, admin-token digest, image digest, and git commit are part of
 the measured Compose. The admin token itself is deliberately absent from the
 rendered file and is passed through Phala's encrypted environment instead. The
 Privatemode API key follows the same path into a Compose-managed secret file;
 the proxy reads that file through its official `--apiKey @<file>` interface.
 The gateway checks both secrets against their measured digests before use.
+The renderer replaces the local manifest path with inline JSON content and
+verifies that the rendered bytes retain the source file's SHA-256, including
+whitespace and its final newline.
 Those non-secret content pins are also service labels, ensuring Compose
 recreates both services when a mounted inline config changes instead of
 restarting a container with stale config bytes.

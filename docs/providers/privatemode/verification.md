@@ -77,20 +77,19 @@ export PRIVATE_AI_GATEWAY_REPO_COMMIT=<audited-commit>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<admin-token>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256="$(printf %s "$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)"
 export PRIVATEMODE_API_KEY=<privatemode-api-key>
-export PRIVATEMODE_MANIFEST_JSON="$(jq -c . /absolute/path/to/manifest.json)"
-export PRIVATEMODE_MANIFEST_SHA256="$(printf %s "$PRIVATEMODE_MANIFEST_JSON" | sha256sum | cut -d' ' -f1)"
+export PRIVATEMODE_MANIFEST_PATH=/absolute/path/to/exact-reviewed-manifest.json
 export PRIVATEMODE_CREDENTIAL_SHA256="$(printf %s "$PRIVATEMODE_API_KEY" | sha256sum | cut -d' ' -f1)"
 
-env -u PRIVATE_AI_GATEWAY_ADMIN_TOKEN \
-  docker compose -f deploy/compose.privatemode.yaml config \
-  -o /tmp/private-ai-gateway-privatemode.yaml
+deploy/render-privatemode-compose.sh /tmp/private-ai-gateway-privatemode.json
 phala-h4xuser deploy -n private-ai-gateway \
-  -c /tmp/private-ai-gateway-privatemode.yaml \
+  -c /tmp/private-ai-gateway-privatemode.json \
   -e PRIVATE_AI_GATEWAY_ADMIN_TOKEN="$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" \
   -e PRIVATEMODE_API_KEY="$PRIVATEMODE_API_KEY"
 ```
 
-Rendering makes the manifest and non-secret pins part of the measured Compose.
+Rendering makes the exact manifest bytes and non-secret pins part of the
+measured Compose. The renderer verifies that inline serialization preserves the
+manifest file's SHA-256, including its whitespace and final newline.
 Both secrets remain outside it and enter only through the encrypted deployment
 environment. Compose mounts the Privatemode key as a secret file for the
 official proxy's `--apiKey @<file>` interface. Their measured SHA-256 policies

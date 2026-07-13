@@ -91,7 +91,7 @@ configs:
       []
 
   privatemode-manifest:
-    content: ${PRIVATEMODE_MANIFEST_JSON:?set PRIVATEMODE_MANIFEST_JSON to compact reviewed manifest JSON}
+    file: ${PRIVATEMODE_MANIFEST_PATH:?set PRIVATEMODE_MANIFEST_PATH to the exact reviewed manifest file}
 
 volumes:
   gateway-checkout:
