@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import signal
 import subprocess
@@ -57,16 +58,55 @@ class AggregatorProcess:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         config = build_upstream_config(self.providers, self.env)
         write_json(self.upstream_seed_path, config, mode=0o600)
-        write_json(
-            self.gateway_config_path,
-            {
-                "bind": f"127.0.0.1:{self.port}",
-                "state_dir": str(self.state_dir),
-                "upstream_config_seed_path": str(self.upstream_seed_path),
-                "dstack_endpoint": self.dstack_endpoint,
-            },
-            mode=0o600,
-        )
+        gateway_config: dict[str, Any] = {
+            "bind": f"127.0.0.1:{self.port}",
+            "state_dir": str(self.state_dir),
+            "upstream_config_seed_path": str(self.upstream_seed_path),
+            "dstack_endpoint": self.dstack_endpoint,
+        }
+        privatemode = [
+            provider for provider in self.providers if provider.provider == "privatemode"
+        ]
+        if privatemode:
+            first = privatemode[0]
+            credential = self.env.get(first.api_key_env)
+            if not credential:
+                raise RuntimeError(f"missing API key env var {first.api_key_env}")
+            required = {
+                "manifest_path": first.privatemode_manifest_path,
+                "manifest_sha256": first.privatemode_manifest_sha256,
+                "credential_sha256": hashlib.sha256(
+                    credential.encode("utf-8")
+                ).hexdigest(),
+                "proxy_image_digest": first.privatemode_proxy_image_digest,
+            }
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise RuntimeError(
+                    f"Privatemode live E2E is missing static fields: {', '.join(missing)}"
+                )
+            expected = (
+                first.base_url,
+                first.privatemode_manifest_path,
+                first.privatemode_manifest_sha256,
+                first.privatemode_proxy_image_digest,
+            )
+            if any(
+                (
+                    provider.base_url,
+                    provider.privatemode_manifest_path,
+                    provider.privatemode_manifest_sha256,
+                    provider.privatemode_proxy_image_digest,
+                )
+                != expected
+                for provider in privatemode[1:]
+            ):
+                raise RuntimeError("all Privatemode routes must share one static proxy deployment")
+            gateway_config["privatemode_proxy"] = {
+                "base_url": first.base_url,
+                **required,
+            }
+        write_json(self.gateway_config_path, gateway_config, mode=0o600)
         if self.artifact_dir:
             write_json(
                 self.artifact_dir / "aggregator-upstreams.redacted.json",
@@ -169,10 +209,6 @@ def build_upstream_config(
             "chutes_chute_ids",
             "chutes_e2ee_discovery_rounds",
             "chutes_e2ee_discovery_interval_seconds",
-            "privatemode_manifest_path",
-            "privatemode_manifest_sha256",
-            "privatemode_proxy_binary_path",
-            "privatemode_proxy_binary_sha256",
         ):
             value = getattr(provider, field)
             if value is not None and value != {}:

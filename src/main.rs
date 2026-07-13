@@ -33,7 +33,8 @@ use private_ai_gateway::aci::types::{
     KeysetEpoch, ServiceCapabilities, SourceProvenance, TlsSpki, WorkloadIdentity, WorkloadKeyset,
 };
 use private_ai_gateway::aci::upstream::{
-    DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS, DEFAULT_UPSTREAM_READ_TIMEOUT_SECONDS,
+    PrivatemodeProxyDeployment, DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_UPSTREAM_READ_TIMEOUT_SECONDS,
 };
 use private_ai_gateway::aci::verifier::DEFAULT_VERIFIER_REQUEST_TIMEOUT_SECONDS;
 use private_ai_gateway::aggregator::keyset_epoch::{self, DEFAULT_KEYSET_EPOCH_WINDOW_SECONDS};
@@ -78,6 +79,20 @@ struct GatewayConfigFile {
     tls: GatewayTlsConfig,
     dstack_endpoint: Option<String>,
     middleware: Option<MiddlewareConfig>,
+    /// Deployment-owned Privatemode sidecar policy. Unlike upstream routes,
+    /// this is static so the admin API cannot redirect plaintext to another
+    /// proxy or change the measured manifest/image pins.
+    privatemode_proxy: Option<PrivatemodeProxyConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivatemodeProxyConfig {
+    base_url: String,
+    manifest_path: String,
+    manifest_sha256: String,
+    credential_sha256: String,
+    proxy_image_digest: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -356,6 +371,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tls_public_keys = resolve_tls_public_keys(&gateway_config.tls)?;
     let dstack_endpoint = gateway_config.dstack_endpoint.clone();
     let middleware_config = gateway_config.middleware.clone();
+    let privatemode_proxy = gateway_config
+        .privatemode_proxy
+        .as_ref()
+        .map(|config| {
+            PrivatemodeProxyDeployment::new(
+                &config.base_url,
+                &config.manifest_path,
+                &config.manifest_sha256,
+                &config.credential_sha256,
+                &config.proxy_image_digest,
+            )
+            .map(Arc::new)
+            .map_err(|err| invalid_input(err.to_string()))
+        })
+        .transpose()?;
 
     let provider = Arc::new(
         DstackAciProvider::new(dstack_endpoint, DstackAciProviderConfig::default()).await?,
@@ -375,6 +405,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             connect_timeout_seconds: DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
             read_timeout_seconds: DEFAULT_UPSTREAM_READ_TIMEOUT_SECONDS,
             verifier_request_timeout_seconds: DEFAULT_VERIFIER_REQUEST_TIMEOUT_SECONDS,
+            privatemode_proxy,
         },
     )?);
     let upstream = upstream_config.backend();
@@ -693,6 +724,43 @@ kBH1U3IsAJyU8UbZqzFEUGG7Ro3vdOQ=
         let config = load_gateway_config(config_path.to_str().unwrap()).unwrap();
 
         assert_eq!(config.state_dir.as_deref(), Some("/gateway/state"));
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn gateway_config_parses_static_privatemode_proxy_policy() {
+        let config_path = temp_path("gateway-config-privatemode");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{
+                    "privatemode_proxy": {{
+                        "base_url": "http://privatemode-proxy:8080",
+                        "manifest_path": "/run/privatemode/manifest.json",
+                        "manifest_sha256": "{}",
+                        "credential_sha256": "{}",
+                        "proxy_image_digest": "sha256:{}"
+                    }}
+                }}"#,
+                "11".repeat(32),
+                "33".repeat(32),
+                "22".repeat(32)
+            ),
+        )
+        .unwrap();
+
+        let config = load_gateway_config(config_path.to_str().unwrap()).unwrap();
+        let proxy = config
+            .privatemode_proxy
+            .expect("static Privatemode policy should parse");
+        assert_eq!(proxy.base_url, "http://privatemode-proxy:8080");
+        assert_eq!(proxy.manifest_path, "/run/privatemode/manifest.json");
+        assert_eq!(proxy.manifest_sha256, "11".repeat(32));
+        assert_eq!(proxy.credential_sha256, "33".repeat(32));
+        assert_eq!(
+            proxy.proxy_image_digest,
+            format!("sha256:{}", "22".repeat(32))
+        );
         let _ = std::fs::remove_file(config_path);
     }
 

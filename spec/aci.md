@@ -871,7 +871,7 @@ appear):
   "upstream_name": "<service-chosen upstream label>",
   "provider_type": "<verifier adapter type or null>",
   "model_id": "<upstream model served>",
-  "url_origin": "<https-origin-or-null>",
+  "url_origin": "<origin-or-null>",
   "verifier_id": "<verifier implementation id>",
   "result": "verified" | "failed",
   "required": true | false,
@@ -895,16 +895,26 @@ upstream. Defined shapes:
 { "type": "tls_certificate_sha256", "origin": "<https-origin>", "certificate_sha256": "<hex>" }
 { "type": "e2ee_public_key_sha256", "provider": "<label>", "key_id": "<optional>", "algorithm": "<algo>", "public_key_sha256": "<hex>" }
 { "type": "manifest_sha256",        "provider": "<label>", "manifest_sha256": "<hex>", "coordinator_policy_hash": "<hex>", "proxy_binary_sha256": "<hex>", "proxy_tls_certificate_sha256": "<hex>" }
+{ "type": "manifest_image_sha256",  "provider": "<label>", "manifest_sha256": "<hex>", "coordinator_policy_hash": "<hex>", "proxy_image_digest": "sha256:<hex>" }
 ```
 
-`manifest_sha256` is enforceable only when the provider proxy that verified the
+`manifest_sha256` is the legacy supervised-child binding. Its executable and
+loopback TLS certificate fields remain part of `aci/1` so existing artifacts
+remain readable and enforceable by implementations that support that boundary.
+
+`manifest_image_sha256` is enforceable only when the provider proxy that verified the
 manifest and owns the resulting E2EE secret is inside the aggregator's attested
-workload. The aggregator MUST launch the exact `proxy_binary_sha256` executable
-with the exact manifest, MUST authenticate the fresh child through the
-`proxy_tls_certificate_sha256` loopback TLS channel, and MUST route every
-forward through that child. A remote or externally managed proxy, a mutable
-binary/manifest after verification, or a manifest used only as informational
+workload. The measured deployment MUST launch the exact `proxy_image_digest`
+with the exact manifest, MUST keep the proxy endpoint private to that workload,
+and the aggregator MUST pin that endpoint in static measured policy and route
+every forward through it. A remote or externally managed proxy, a mutable
+image/manifest after verification, or a manifest used only as informational
 evidence does not satisfy this binding type.
+
+External upstream origins MUST use HTTPS. A plaintext HTTP `url_origin` is
+valid only for a service inside the same measured workload when its binding
+type (such as `manifest_image_sha256`) explicitly binds that deployment and the
+client disables redirects and ambient HTTP proxies.
 
 To a generic verifier this event proves only that the attested aggregator
 *asserted* the outcome; deep audit (§10.3) upgrades it to independently
@@ -1279,7 +1289,7 @@ these sets requires a published extension document.
 | Signature algorithms | `ed25519` (RECOMMENDED), `ecdsa-secp256k1` | Reject |
 | E2EE suites | `x25519-aes-256-gcm-hkdf-sha256` (RECOMMENDED; HKDF info `aci.e2ee.v2.x25519`), `secp256k1-aes-256-gcm-hkdf-sha256` (HKDF info `aci.e2ee.v2.secp256k1`) | Reject; other keyset entries with unknown `algo` are ignored for E2EE |
 | Receipt event types | `request.received`, `request.forwarded`, `response.returned`, `response.received`, `upstream.verified`, `transparency.request_modified`, `transparency.response_modified` | Ignore; preserve for signature recomputation (§3.2) |
-| Channel binding types | `tls_spki_sha256`, `tls_certificate_sha256`, `e2ee_public_key_sha256`, `manifest_sha256` | Treat as not enforceable |
+| Channel binding types | `tls_spki_sha256`, `tls_certificate_sha256`, `e2ee_public_key_sha256`, `manifest_sha256`, `manifest_image_sha256` | Treat as not enforceable |
 | Claim names | `tee_attested`, `gpu_attested`, `tcb_up_to_date`, `os_known_good`, `serving_software_known_good`, `model_weights_provenance` | Extra facts live in `claims.extra`; unknown entries are informational |
 | Claim statuses / sources | `asserted`, `refuted`, `unknown` / `hardware_proven`, `verifier_derived`, `provider_asserted`, `operator_asserted` | Treat the claim as `unknown` |
 | TEE types | `tdx`, `sev_snp` | Requires a published verifier extension (§5.2) |

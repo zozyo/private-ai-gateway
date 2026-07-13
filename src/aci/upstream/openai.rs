@@ -310,7 +310,8 @@ impl OpenAICompatibleBackend {
                         self.name
                     )));
                 }
-                ChannelBinding::ManifestSha256 { provider, .. } => {
+                ChannelBinding::ManifestSha256 { provider, .. }
+                | ChannelBinding::ManifestImageSha256 { provider, .. } => {
                     return Err(UpstreamError::Transport(format!(
                         "backend {} cannot enforce {provider} manifest binding",
                         self.name

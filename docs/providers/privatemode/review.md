@@ -1,8 +1,8 @@
 # Privatemode provider review
 
 Audit date: 2026-05-26 UTC. Provider behavior was rechecked against
-Privatemode v1.48 and the live manifest on 2026-07-09; the gateway supervision
-contract was reviewed on 2026-07-10.
+Privatemode v1.48 and the live manifest on 2026-07-09. The gateway adapter was
+changed to the measured co-deployment boundary on 2026-07-13.
 
 Provider: [Privatemode](https://www.privatemode.ai/) by Edgeless Systems.
 TCB source: [`edgelesssys/privatemode-public`](https://github.com/edgelesssys/privatemode-public).
@@ -20,14 +20,21 @@ rejected a plaintext request.
 Admission conditions:
 
 - Pin a reviewed manifest digest instead of trusting automatic CDN updates.
-- Pin the official proxy executable digest inside the gateway's attested
-  workload.
-- Let the gateway launch the exact pinned executable and manifest from sealed
-  memory files. Do not attach an externally managed proxy.
-- Require the gateway's pinned ephemeral TLS channel to the supervised child.
+- Pin the official proxy OCI image by digest in the same measured dstack
+  Compose as the gateway.
+- Mount the same reviewed manifest into both services and repeat its digest and
+  proxy image digest in static gateway policy.
+- Require every mutable Privatemode route to use the statically pinned internal
+  service origin.
+- Disable HTTP redirects for proxy readiness and forwarding requests.
+- Bind the accepted credential digest in measured static policy and require a
+  coordinated gateway/proxy redeploy to change it, matching the proxy's
+  first-credential ownership semantics.
 - Expose only the gateway listener from the workload network. Version 1.48 of
-  the official proxy has no listen-address flag and opens its ephemeral port on
+  the official proxy has no listen-address flag and opens its configured port on
   the network namespace's wildcard address.
+- Override the proxy's availability-oriented NVIDIA OCSP defaults: reject
+  unknown status and use no revoked-certificate grace period.
 - Treat the proxy as part of the TCB: the gateway verifies its manifest binding
   but does not possess the provider E2EE secret.
 
@@ -73,7 +80,7 @@ Open or conditional:
 
 - The manifest publication channel has no detached signature. In automatic
   mode the initial trust seed is CDN TLS. The gateway adapter closes this gap
-  operationally by requiring an explicit SHA-256 manifest pin and supervised
+  operationally by requiring an explicit SHA-256 manifest pin and measured
   static-manifest mode.
 - The observed manifest has one RSA seed-share owner key. Public ownership,
   recovery procedure, rotation policy, and quorum expectations should be
@@ -99,34 +106,27 @@ Open or conditional:
 
 ## Adapter validation
 
-The supervisor integration tests exercise the security boundary directly. A
-proxy fixture implementing the official command-line and credential timing
-contract rejects any API key in its arguments, reads its executable inputs
-through inherited descriptors, and serves only pinned TLS. The test mutates
-the source binary and manifest after supervisor construction, verifies that the
-sealed copies are used, forces the child to exit and restart, and consumes a
-slow stream after all other supervisor references are dropped. A full gateway
-test also verifies that the receipt records the manifest, Coordinator policy,
-proxy executable, and ephemeral TLS-certificate digests.
+The adapter tests run a persistent HTTP service at the same boundary as the
+Compose sidecar. They verify that manifest bytes are checked and retained at
+static-policy construction, an authenticated model-list probe gates verified
+events, bearer authentication reaches inference, buffered and streaming
+forwards require the exact receipt binding, and receipts record the manifest,
+Coordinator policy, proxy image digest, and internal origin. Config tests reject
+legacy deployment fields in mutable upstream config, and deployment tests pin
+the official image while ensuring its port is not published.
 
-On 2026-07-10 the final supervisor was also exercised end to end against the
-production service with a real API key and the official v1.48.0 binary. The
-gateway executed the pinned binary from sealed memory, supplied the pinned
-manifest through the inherited descriptor, authenticated the fresh child over
-its ephemeral pinned TLS channel, and completed the live SNP Coordinator
-verification and secret exchange. A chat request returned HTTP 200 through the
-gateway, and its signed receipt matched the configured manifest and binary
-digests while recording the Coordinator-policy and child-certificate digests.
-Redacted artifacts are retained at
-`/tmp/private-ai-gateway-live-e2e/20260710-195532-privatemode-supervised` on the
-test host.
+The earlier child-supervisor prototype was exercised end to end against the
+production service on 2026-07-10 with a real API key and the official v1.48.0
+binary. That established compatibility with the live Contrast verification,
+secret exchange, chat, and receipt path, but its process-management boundary is
+no longer part of the adapter. A live run of the replacement Compose boundary
+must accompany its deployment review.
 
 ## Adapter decision
 
-The gateway does not reimplement Contrast or copy only its quote checks. Its
-first-class `privatemode` upstream owns an official-proxy child from executable
-verification through process lifetime. The verifier and forwarding backend
-share that supervisor. Receipts bind the exact manifest and Coordinator policy,
-the exact proxy executable, and the pinned TLS identity of the child that
-carried the request. See [verification.md](verification.md) for the enforced
-contract.
+The gateway does not reimplement Contrast or copy only its quote checks. dstack
+owns the official proxy lifecycle as a separate service in the same measured
+Compose. The gateway verifier and forwarding backend share immutable static
+policy for that service. Receipts bind the exact manifest and Coordinator
+policy, official proxy image digest, and internal origin that carried the
+request. See [verification.md](verification.md) for the enforced contract.

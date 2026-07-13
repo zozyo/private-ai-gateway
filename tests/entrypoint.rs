@@ -25,6 +25,45 @@ fn script_text() -> String {
     std::fs::read_to_string(script_path()).expect("entrypoint.sh must exist at repo root")
 }
 
+fn privatemode_compose_text() -> String {
+    std::fs::read_to_string(repo_root().join("deploy/compose.privatemode.yaml"))
+        .expect("Privatemode deployment compose must exist")
+}
+
+#[test]
+fn privatemode_proxy_is_a_pinned_unpublished_compose_service() {
+    let body = privatemode_compose_text();
+    let service = body
+        .split("\n  privatemode-proxy:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\nconfigs:\n").next())
+        .expect("compose must declare a privatemode-proxy service");
+    assert!(service.contains(
+        "ghcr.io/edgelesssys/privatemode/privatemode-proxy@sha256:ff900b263a51a437633d15da809e7893a31fa4b1f4acfa4e526c075682d84307"
+    ));
+    assert!(
+        !service.contains("ports:"),
+        "proxy port must not be published"
+    );
+    assert!(service.contains("--manifestPath"));
+    assert!(service.contains("--nvidiaOCSPAllowUnknown=false"));
+    assert!(service.contains("--nvidiaOCSPRevokedGracePeriod=0"));
+    assert!(service.contains("source: privatemode-manifest"));
+    assert!(service.contains("tmpfs:"));
+    assert!(!service.contains("privatemode-state"));
+}
+
+#[test]
+fn privatemode_gateway_and_proxy_share_measured_pins() {
+    let body = privatemode_compose_text();
+    assert!(body.contains(r#""base_url": "http://privatemode-proxy:8080""#));
+    assert!(body.contains(r#""manifest_path": "/run/privatemode/manifest.json""#));
+    assert!(body.contains("PRIVATEMODE_MANIFEST_SHA256:?"));
+    assert!(body.contains("PRIVATEMODE_CREDENTIAL_SHA256:?"));
+    assert!(body.contains("PRIVATEMODE_MANIFEST_PATH:?"));
+    assert_eq!(body.matches("source: privatemode-manifest").count(), 2);
+}
+
 #[test]
 fn entrypoint_sh_exists_and_is_executable() {
     let p = script_path();

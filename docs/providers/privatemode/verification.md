@@ -1,97 +1,126 @@
-# Privatemode — supervised delegated attestation
+# Privatemode — co-deployed delegated attestation
 
 - **TEE:** AMD SEV-SNP or Intel TDX + NVIDIA Confidential Computing
-- **Session binding:** `manifest_sha256`, including the Coordinator policy,
-  exact proxy executable, and supervised TLS channel
-- **Verifier:** gateway-owned supervisor running the official
-  `privatemode-proxy`
-- **Transport:** pinned TLS on loopback to the proxy; Privatemode E2EE from the
-  proxy to model workers
+- **Session binding:** `manifest_image_sha256`: reviewed Contrast manifest, Coordinator policy, and
+  official proxy OCI image digest
+- **Verifier:** official `privatemode-proxy` co-deployed in the gateway's
+  measured dstack Compose
+- **Transport:** private Compose HTTP to the proxy; Privatemode full-body E2EE
+  from the proxy to model workers
 - **Audit:** see [review.md](review.md)
 
-## Why the proxy is part of the binding
+## Trust boundary
 
 Privatemode deliberately couples verification and encryption. The official
 proxy verifies the Contrast Coordinator against a manifest, obtains the Mesh
-CA, and exchanges an inference secret with the Secret Service. Only workloads
-admitted under the same manifest receive that secret. The proxy then encrypts
-inference requests and decrypts responses.
+CA, exchanges an inference secret with the Secret Service, and uses that secret
+to encrypt inference bodies. Reimplementing only the quote check would not bind
+gateway traffic to the secret released by that protocol.
 
-Reimplementing only a quote check would not bind gateway traffic to the secret
-released by that protocol. The gateway therefore runs the official proxy as a
-child inside its attested workload and treats the child as part of the channel
-TCB.
+The gateway therefore delegates this protocol to the official proxy, but it
+does not run the proxy as a child process. dstack launches the gateway and proxy
+as separate services in one measured Compose workload. That measurement binds
+the proxy image digest, its command, the manifest mount, and the private network
+topology. The proxy port is not published.
+Its workspace is an unpersisted `tmpfs`, so a service restart cannot silently
+reuse credential or Contrast state from an earlier container generation.
+The proxy is launched with `--nvidiaOCSPAllowUnknown=false` and
+`--nvidiaOCSPRevokedGracePeriod=0`; unknown or revoked NVIDIA certificate
+status therefore fails closed instead of using the availability-oriented
+upstream defaults.
 
-## Supervised generation
+The gateway's static config separately pins:
 
-The gateway, rather than an operator or sidecar manager, owns every proxy
-generation:
+- the internal proxy origin;
+- the exact manifest path and SHA-256 digest;
+- the SHA-256 digest of the one accepted API credential;
+- the official proxy OCI image digest recorded in the Compose file.
 
-1. At config load, it reads the configured proxy executable and manifest,
-   verifies both SHA-256 pins, and validates that the manifest has exactly one
-   Coordinator policy.
-2. It copies both files into sealed Linux memory files. Later changes to the
-   source paths cannot affect the generation.
-3. It creates an ephemeral self-signed TLS certificate and key and seals those
-   in memory files too.
-4. It executes the binary through `/proc/self/fd`, passing only the manifest,
-   TLS-file descriptors, and a reserved loopback port. The child starts with an
-   empty environment and no API key in its arguments or environment.
-5. Over a client that trusts only the generated certificate and never uses an
-   HTTP proxy, the gateway sends the bearer credential on the child's first
-   `/v1/models` request. A fresh official proxy cannot return success until it
-   has completed Contrast verification and secret exchange.
-6. Only after that request returns a valid models response can verification or
-   inference succeed.
+These fields cannot be changed through `PUT /v1/admin/upstreams`. A dynamic
+Privatemode route is accepted only when its `base_url` exactly matches the
+static origin and its `bearer_token` matches the static credential digest. This
+prevents an admin-config update from redirecting plaintext to a different proxy
+or diverging from credential state retained by that proxy.
 
-If the child exits, the next operation starts a fresh child from the same
-sealed executable and manifest and performs the credential exchange again.
-Replacing the upstream config creates a new generation. In-flight streaming
-responses retain their old supervisor until the response body finishes, so a
-config replacement cannot silently move a stream between generations.
+## Verification and forwarding
 
-This implementation is Linux-specific because sealed memory files and
-`/proc/self/fd` execution are part of the security contract.
+At startup, the gateway reads the mounted manifest, verifies its digest, and
+requires exactly one Coordinator policy. When a route is verified, the gateway
+sends an authenticated `GET /v1/models` to the pinned internal origin using a
+client that ignores HTTP proxy environment variables. A fresh official proxy
+cannot return a successful model list until it has completed Contrast
+verification and inference-secret exchange for that credential. The client
+also rejects redirects, so neither the readiness credential nor a forwarded
+prompt can be redirected away from the pinned internal origin. Readiness has an
+end-to-end request deadline and rejects model-list bodies over 1 MiB, including
+chunked responses without a declared length.
 
-Privatemode-proxy v1.48 opens its selected port on the network namespace's
-wildcard address; it has no listen-address flag. The gateway connects only to
-the loopback address and authenticates the child by certificate, but the
-workload network must expose only the gateway's public listener. Do not publish
-or permit untrusted same-network access to the child's ephemeral ports.
+The verifier emits a verified event only after this probe returns a JSON model
+list. The forwarding backend accepts only that exact manifest/image binding,
+then sends OpenAI-compatible requests to the same internal origin. The proxy
+performs Privatemode full-body encryption and response decryption.
+
+Plain HTTP is intentional at this hop. It is not a remote trust channel: both
+endpoints and their private network are inside the same attested dstack
+workload. Adding a self-signed TLS layer would encrypt the same in-workload hop
+without independently authenticating the measured service. The security
+requirements are instead that the proxy remains in the measured Compose and
+its port is never published.
 
 ## Configuration
 
-Download and review both official artifacts, then calculate their digests:
+Use [`deploy/compose.privatemode.yaml`](../../../deploy/compose.privatemode.yaml)
+and set the reviewed manifest file and digest before deployment:
 
 ```bash
-sha256sum /run/privatemode/manifest.json
-sha256sum /usr/local/bin/privatemode-proxy
+sha256sum /absolute/path/to/manifest.json
+
+PRIVATE_AI_GATEWAY_REPO_COMMIT=<audited-commit> \
+PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<admin-token> \
+PRIVATEMODE_MANIFEST_PATH=/absolute/path/to/manifest.json \
+PRIVATEMODE_MANIFEST_SHA256=<64-hex-digest> \
+PRIVATEMODE_CREDENTIAL_SHA256=<sha256-of-privatemode-api-key> \
+phala-h4xuser deploy -n private-ai-gateway -c compose.privatemode.yaml
 ```
 
-Configure the gateway to supervise them:
+The measured static gateway config has this shape:
+
+```json
+{
+  "privatemode_proxy": {
+    "base_url": "http://privatemode-proxy:8080",
+    "manifest_path": "/run/privatemode/manifest.json",
+    "manifest_sha256": "<64-lowercase-hex-characters>",
+    "credential_sha256": "<sha256-of-privatemode-api-key>",
+    "proxy_image_digest": "sha256:ff900b263a51a437633d15da809e7893a31fa4b1f4acfa4e526c075682d84307"
+  }
+}
+```
+
+Configure the mutable route, including its API credential, after boot:
 
 ```json
 [
   {
     "name": "privatemode",
     "provider": "privatemode",
-    "base_url": "supervised://privatemode-proxy",
+    "base_url": "http://privatemode-proxy:8080",
     "models": {
       "gpt-oss-120b-private": "gpt-oss-120b"
     },
-    "bearer_token": "<privatemode-api-key>",
-    "privatemode_manifest_path": "/run/privatemode/manifest.json",
-    "privatemode_manifest_sha256": "<64-lowercase-hex-characters>",
-    "privatemode_proxy_binary_path": "/usr/local/bin/privatemode-proxy",
-    "privatemode_proxy_binary_sha256": "<64-lowercase-hex-characters>"
+    "bearer_token": "<privatemode-api-key>"
   }
 ]
 ```
 
-Both paths must be absolute. `base_url` is a required logical identifier, not a
-network endpoint. Any other value is rejected. Operators must not launch a
-separate proxy for this upstream, and container/VM ingress must expose only the
-gateway port.
+One co-deployed proxy supports one gateway upstream entry. Put all models that
+share its credential in that entry. The official proxy's secret manager keeps
+the first offered credential. The gateway accepts only a `bearer_token` matching
+the static measured `credential_sha256`, including after route removal or a
+gateway-only restart. To rotate the key, remove the route, change the measured
+credential digest, redeploy both the gateway and proxy, then add the route with
+the new credential. If distinct credentials are required, deploy distinct
+measured proxy services rather than pointing multiple entries at one service.
 
 ## Session binding
 
@@ -99,44 +128,36 @@ The verifier emits one binding:
 
 ```json
 {
-  "type": "manifest_sha256",
+  "type": "manifest_image_sha256",
   "provider": "privatemode",
   "manifest_sha256": "...",
   "coordinator_policy_hash": "...",
-  "proxy_binary_sha256": "...",
-  "proxy_tls_certificate_sha256": "..."
+  "proxy_image_digest": "sha256:..."
 }
 ```
 
-The first three digests bind the provider policy and the exact implementation
-that executed it. The TLS-certificate digest binds forwarding to that specific
-child generation. The backend accepts only a verified Privatemode event with
-exactly this binding, checks all four values against its shared supervisor, and
-uses a client pinned to the same loopback certificate.
-
-The event's `url_origin` is the generation's actual ephemeral
-`https://127.0.0.1:<port>` origin. Its verifier id is
-`privatemode-proxy/supervised-contrast/v1`. The raw pinned manifest is retained
-as verification evidence.
+The event's `url_origin` is the pinned internal service origin. Its verifier id
+is `privatemode-proxy/co-deployed-contrast/v1`. The exact manifest bytes are
+retained as verification evidence.
 
 ## Failure behavior
 
-The route fails closed when the binary or manifest is missing, malformed, or
-does not match its digest; the manifest does not contain exactly one
-Coordinator policy; the child cannot start; its pinned TLS endpoint does not
-become ready; the authenticated models request fails; the child exits during
-an operation; or the verified binding differs from the supervisor generation.
+The route fails closed when static proxy policy is absent; the route origin
+differs from the static origin; the manifest is missing, malformed, or has the
+wrong digest; the manifest does not contain exactly one Coordinator policy;
+the proxy image digest is malformed; the authenticated model-list probe fails;
+or the verified receipt binding differs from the active deployment.
 
-The gateway never falls back to the public Privatemode API, an externally
-managed proxy, plaintext loopback, or a newly read version of either source
-file.
+There is no fallback to the public Privatemode API, an operator-supplied remote
+proxy, an HTTP redirect, or an HTTP proxy from the process environment. Proxy
+error bodies are not exposed in public verification failures. Container
+restart and lifecycle policy belong to Compose.
 
 ## Updates
 
-A manifest or proxy-binary change alters the channel TCB. Review the new
-artifact, calculate a new digest, and intentionally replace the upstream
-configuration. That replacement creates a distinct TLS certificate and
-attested session; it does not mutate an existing generation.
+A manifest or proxy-image change alters the channel TCB. Review both changes,
+update the manifest digest and image digest in the measured static deployment,
+and redeploy. A dynamic upstream-config replacement cannot mutate these pins.
 
 ## Sources
 

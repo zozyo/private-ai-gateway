@@ -13,7 +13,7 @@ One directory per upstream provider. Each holds up to two documents:
 | Chutes | Intel TDX + NVIDIA CC | `e2ee_public_key_sha256` | [verification](chutes/verification.md) | [review](chutes/review.md) |
 | NEAR AI | Intel TDX + NVIDIA CC | `tls_spki_sha256` | [verification](near-ai/verification.md) | [review](near-ai/review.md) |
 | Tinfoil | AMD SEV-SNP (or TDX) + NVIDIA CC | `tls_spki_sha256` | [verification](tinfoil/verification.md) | [review](tinfoil/review.md) |
-| Privatemode | AMD SEV-SNP or Intel TDX + NVIDIA CC | `manifest_sha256` | [verification](privatemode/verification.md) | [review](privatemode/review.md) |
+| Privatemode | AMD SEV-SNP or Intel TDX + NVIDIA CC | `manifest_image_sha256` | [verification](privatemode/verification.md) | [review](privatemode/review.md) |
 | AciService (first-party) | Intel TDX + NVIDIA CC | `tls_spki_sha256` | [verification](aci-service/verification.md) | — (first-party) |
 | PhalaDirect | Intel TDX + NVIDIA CC | `tls_spki_sha256` | [verification](phala-direct/verification.md) | [review](phala-direct/review.md) |
 | SecretAI | AMD SEV-SNP + NVIDIA CC | — (adapter deferred) | — | [review](secret-ai/review.md) |
@@ -44,10 +44,10 @@ The binding types:
 - **`e2ee_public_key_sha256`** — SHA-256 of the upstream's end-to-end public key; the
   backend encrypts the request body to that key, so only the attested enclave can
   decrypt.
-- **`manifest_sha256`** — SHA-256 of an attestation manifest plus its Coordinator
-  policy hash, the exact proxy-binary digest, and the supervised child's ephemeral
-  TLS-certificate digest. The gateway launches that generation from sealed memory
-  files and routes only over its pinned loopback TLS channel.
+- **`manifest_image_sha256`** — SHA-256 of an attestation manifest plus its Coordinator
+  policy hash and the official proxy OCI image digest. dstack launches the proxy
+  beside the gateway from the same measured Compose, and the gateway accepts only
+  the statically pinned internal service origin.
 
 ### Invariant: verified ⟹ enforceable binding
 

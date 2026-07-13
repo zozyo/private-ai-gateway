@@ -41,12 +41,6 @@ rustls-pemfile = "2"
 x509-parser = "0.16"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
-rcgen = "0.14"
-
-# Linux process supervision for the sealed Privatemode proxy executable,
-# manifest, and ephemeral local-TLS identity.
-libc = "0.2"
-rustix = { version = "1", features = ["fs"] }
 
 # HTTP server.
 axum = "0.7"

@@ -114,16 +114,24 @@ pub enum ChannelBinding {
         algorithm: String,
         public_key_sha256: String,
     },
-    /// Digests sealing one gateway-supervised provider-proxy generation. The
-    /// proxy verifies the provider's attestation chain and owns the resulting
-    /// E2EE secret. The gateway launches the exact binary and manifest from
-    /// sealed memory files and pins that child's ephemeral TLS certificate.
+    /// Legacy binding for a gateway-supervised provider-proxy child. Retained
+    /// so existing `aci/1` receipts and persisted sessions remain readable.
     ManifestSha256 {
         provider: String,
         manifest_sha256: String,
         coordinator_policy_hash: String,
         proxy_binary_sha256: String,
         proxy_tls_certificate_sha256: String,
+    },
+    /// Digests binding a provider proxy co-deployed in the gateway's measured
+    /// dstack Compose. The proxy verifies the provider's attestation chain and
+    /// owns the resulting E2EE secret. The gateway verifies the exact manifest
+    /// bytes and pins the Compose-owned proxy image digest.
+    ManifestImageSha256 {
+        provider: String,
+        manifest_sha256: String,
+        coordinator_policy_hash: String,
+        proxy_image_digest: String,
     },
 }
 

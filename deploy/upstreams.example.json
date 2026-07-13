@@ -50,15 +50,11 @@
   {
     "name": "privatemode-gpt-oss",
     "provider": "privatemode",
-    "base_url": "supervised://privatemode-proxy",
+    "base_url": "http://privatemode-proxy:8080",
     "models": {
       "gpt-oss-120b-private": "gpt-oss-120b"
     },
-    "bearer_token": "<privatemode-api-key>",
-    "privatemode_manifest_path": "/run/privatemode/manifest.json",
-    "privatemode_manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "privatemode_proxy_binary_path": "/usr/local/bin/privatemode-proxy",
-    "privatemode_proxy_binary_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "bearer_token": "<privatemode-api-key>"
   },
   {
     "name": "phala-direct-qwen3",

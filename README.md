@@ -322,7 +322,7 @@ Supported `provider` values:
 | `tinfoil` | Tinfoil provider adapter using provider-owned verification through `private-ai-verifier`. |
 | `near-ai` | NEAR AI gateway adapter with TLS binding from the provider report. |
 | `chutes` | Chutes adapter with provider E2EE key verification and encrypted `/e2e/invoke` transport. |
-| `privatemode` | Privatemode adapter that supervises a pinned official proxy binary and pinned Contrast manifest in-process. See [docs/providers/privatemode/verification.md](docs/providers/privatemode/verification.md). |
+| `privatemode` | Privatemode adapter using an official proxy image and Contrast manifest pinned in the same measured dstack Compose. See [docs/providers/privatemode/verification.md](docs/providers/privatemode/verification.md). |
 | `phala-direct` | Direct Phala dstack-vllm-proxy endpoint (one per model) with TLS SPKI binding from the version-2 attestation report. See [docs/providers/phala-direct/verification.md](docs/providers/phala-direct/verification.md). |
 
 ACI service verification policy is set on the upstream entry with
@@ -332,7 +332,8 @@ ACI service verification policy is set on the upstream entry with
 Tinfoil, NEAR AI, Chutes, and PhalaDirect use the vendored provider verifier
 bridge. Set `PRIVATE_AI_VERIFIER_DIR` only when you need to override the
 vendored verifier package with an external checkout. Privatemode verification
-is performed by the Rust supervisor that owns its exact proxy generation.
+is delegated to the official proxy co-deployed with the gateway; the Rust
+adapter enforces its measured endpoint, manifest, and image binding.
 
 For one-command Compose deployments, set `upstream_config_seed_path` in the
 static gateway config to a read-only seed file. The gateway validates and

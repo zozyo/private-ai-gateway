@@ -109,14 +109,16 @@ fn build_provider_backend(
             )?))
         }
         UpstreamProvider::Privatemode => {
-            let supervisor = sessions.privatemode(&cfg.name).ok_or_else(|| {
+            let deployment = options.privatemode_proxy.clone().ok_or_else(|| {
                 UpstreamConfigError::InvalidConfig(format!(
-                    "missing supervised Privatemode proxy for upstream {:?}",
+                    "Privatemode upstream {:?} requires static privatemode_proxy gateway config",
                     cfg.name
                 ))
             })?;
+            enforce_privatemode_deployment(cfg, &deployment)?;
             let backend = PrivatemodeProviderBackend::new_with_timeouts(
-                supervisor,
+                deployment,
+                cfg.bearer_token.clone().unwrap_or_default(),
                 connect_timeout_seconds,
                 read_timeout_seconds,
             )
@@ -268,13 +270,23 @@ fn build_provider_verifier(
                 cache_seconds,
             ))),
             UpstreamProvider::Privatemode => {
-                let supervisor = sessions.privatemode(&cfg.name).ok_or_else(|| {
+                let deployment = options.privatemode_proxy.clone().ok_or_else(|| {
                     UpstreamConfigError::InvalidConfig(format!(
-                        "missing supervised Privatemode proxy for upstream {:?}",
+                        "Privatemode upstream {:?} requires static privatemode_proxy gateway config",
                         cfg.name
                     ))
                 })?;
-                Some(Arc::new(PrivatemodeProviderVerifier::new(supervisor)))
+                enforce_privatemode_deployment(cfg, &deployment)?;
+                Some(Arc::new(
+                    PrivatemodeProviderVerifier::new(
+                        deployment,
+                        cfg.bearer_token.clone().unwrap_or_default(),
+                        cfg.connect_timeout_seconds
+                            .unwrap_or(options.connect_timeout_seconds),
+                        request_timeout_seconds,
+                    )
+                    .map_err(|err| UpstreamConfigError::InvalidConfig(err.to_string()))?,
+                ))
             }
             UpstreamProvider::PhalaDirect => {
                 let mut verifier = PhalaDirectProviderVerifier::new_with_cache(
@@ -289,11 +301,9 @@ fn build_provider_verifier(
         };
         if let Some(verifier) = verifier {
             router = router.add_name(cfg.name.clone(), verifier.clone());
-            // Every Privatemode entry uses the same non-network logical base
-            // URL. Routing it by that value would make the last configured
-            // entry steal prewarming for every earlier entry. Runtime events
-            // use the supervisor's unique pinned loopback TLS origin and all
-            // Privatemode verification is therefore selected by route name.
+            // Privatemode is selected by its exact route name. Do not publish
+            // its internal sidecar origin as a fallback key that another route
+            // sharing that origin could accidentally select.
             if cfg.provider != UpstreamProvider::Privatemode {
                 router =
                     router.add_origin(cfg.base_url.trim_end_matches('/').to_string(), verifier);
@@ -301,6 +311,21 @@ fn build_provider_verifier(
         }
     }
     Ok(Some(Arc::new(router)))
+}
+
+fn enforce_privatemode_deployment(
+    cfg: &UpstreamConfig,
+    deployment: &crate::aci::upstream::PrivatemodeProxyDeployment,
+) -> Result<(), UpstreamConfigError> {
+    if cfg.base_url.trim_end_matches('/') != deployment.base_url() {
+        return Err(UpstreamConfigError::InvalidConfig(format!(
+            "Privatemode upstream {:?} base_url {:?} does not match static proxy endpoint {:?}",
+            cfg.name,
+            cfg.base_url,
+            deployment.base_url()
+        )));
+    }
+    Ok(())
 }
 
 fn build_global_verifier_for_config(

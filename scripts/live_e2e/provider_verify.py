@@ -26,13 +26,12 @@ def verify_provider(
     artifact_dir: Path | None = None,
 ) -> dict[str, Any]:
     if provider.provider == "privatemode":
-        # Privatemode verification is inseparable from the exact proxy child
-        # supervised by the Rust gateway. A standalone Python probe would not
-        # authenticate that process or its active manifest and must not produce
-        # a competing "verified" result.
+        # Privatemode verification is inseparable from the official proxy
+        # co-deployed with the gateway. A standalone Python probe would not bind
+        # that service to the measured deployment and must not compete with it.
         output = {
-            "status": "performed_by_gateway_supervisor",
-            "verifier_id": "privatemode-proxy/supervised-contrast/v1",
+            "status": "performed_by_co_deployed_proxy",
+            "verifier_id": "privatemode-proxy/co-deployed-contrast/v1",
         }
         if artifact_dir:
             write_json(

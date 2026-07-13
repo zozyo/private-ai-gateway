@@ -6,8 +6,13 @@
 //! struct.
 
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
+use std::time::Duration;
 
 mod common;
 
@@ -16,7 +21,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, Request, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{any, get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -36,11 +41,12 @@ use ml_kem::{
 };
 use private_ai_gateway::aci::canonical::sha256_hex;
 use private_ai_gateway::aci::receipt::{
-    ChannelBinding, UpstreamVerifiedEvent, EVENT_REQUEST_FORWARDED, EVENT_UPSTREAM_VERIFIED,
+    ChannelBinding, UpstreamVerifiedEvent, VerificationResult, EVENT_REQUEST_FORWARDED,
+    EVENT_UPSTREAM_VERIFIED,
 };
 use private_ai_gateway::aci::upstream::{
     ChutesProviderBackend, ChutesSessionStore, ChutesVerifiedDiscovery, ChutesVerifiedInstance,
-    OpenAICompatibleBackend, PrivatemodeProviderBackend, PrivatemodeProxySupervisor,
+    OpenAICompatibleBackend, PrivatemodeProviderBackend, PrivatemodeProxyDeployment,
     UpstreamBackend, UpstreamRequest,
 };
 use private_ai_gateway::aci::verifier::{PrivatemodeProviderVerifier, StaticUpstreamVerifier};
@@ -73,72 +79,6 @@ const STREAM_CHAT_REQUEST: &[u8] =
     br#"{"model":"provider-model","stream":true,"messages":[{"role":"user","content":"hello"}]}"#;
 const STREAM_CHAT_RESPONSE_EVENT: &[u8] =
     br#"data: {"id":"chat-provider-1","object":"chat.completion.chunk","model":"provider-model","choices":[{"index":0,"delta":{"role":"assistant","content":"world"},"finish_reason":null}]}"#;
-const FAKE_PRIVATEMODE_PROXY: &[u8] = br###"#!/usr/bin/python3
-import argparse
-import json
-import os
-import ssl
-import sys
-import threading
-import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-if "provider-secret" in sys.argv:
-    raise SystemExit("API key leaked through argv")
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--manifestPath", required=True)
-parser.add_argument("--tlsCertPath", required=True)
-parser.add_argument("--tlsKeyPath", required=True)
-parser.add_argument("--port", required=True, type=int)
-parser.add_argument("--workspace", required=True)
-args = parser.parse_args()
-with open(args.manifestPath, "rb") as manifest:
-    if b'"Role":"coordinator"' not in manifest.read():
-        raise SystemExit("wrong manifest")
-
-chat = b'{"id":"chat-provider-1","object":"chat.completion","model":"provider-model","choices":[{"index":0,"message":{"role":"assistant","content":"world"},"finish_reason":"stop"}]}'
-models = b'{"object":"list","data":[{"id":"provider-model"}]}'
-
-class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    def log_message(self, *_args):
-        pass
-    def reply(self, body, content_type):
-        self.send_response(200)
-        self.send_header("content-type", content_type)
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        if content_type == "text/event-stream":
-            split = len(body) // 2
-            self.wfile.write(body[:split])
-            self.wfile.flush()
-            time.sleep(0.2)
-            self.wfile.write(body[split:])
-        else:
-            self.wfile.write(body)
-    def do_GET(self):
-        if self.path != "/v1/models" or self.headers.get("authorization") != "Bearer provider-secret":
-            self.send_error(401)
-            return
-        self.reply(models, "application/json")
-    def do_POST(self):
-        if self.headers.get("authorization") != "Bearer provider-secret":
-            self.send_error(401)
-            return
-        body = self.rfile.read(int(self.headers.get("content-length", "0")))
-        if body != b'{"model":"provider-model","messages":[{"role":"user","content":"hello"}]}':
-            self.send_error(400)
-            return
-        self.reply(chat, self.headers.get("accept", "application/json"))
-        threading.Timer(0.05, lambda: os._exit(0)).start()
-
-server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-context.load_cert_chain(args.tlsCertPath, args.tlsKeyPath)
-server.socket = context.wrap_socket(server.socket, server_side=True)
-server.serve_forever()
-"###;
 const CHUTES_CHUTE_ID: &str = "2ff25e81-4586-5ec8-b892-3a6f342693d7";
 const CHUTES_INSTANCE_ID: &str = "instance-a";
 const CHUTES_INSTANCE_ID_B: &str = "instance-b";
@@ -219,6 +159,38 @@ async fn models_handler() -> impl IntoResponse {
     }))
 }
 
+fn has_provider_secret(headers: &HeaderMap) -> bool {
+    headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        == Some("Bearer provider-secret")
+}
+
+async fn privatemode_models_handler(headers: HeaderMap) -> axum::response::Response {
+    if !has_provider_secret(&headers) {
+        let reflected_credential = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("missing authorization")
+            .to_string();
+        return (StatusCode::UNAUTHORIZED, reflected_credential).into_response();
+    }
+    models_handler().await.into_response()
+}
+
+async fn privatemode_chat_handler(
+    State(state): State<ProviderState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    if !has_provider_secret(&headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    chat_handler(State(state), headers, body)
+        .await
+        .into_response()
+}
+
 async fn embeddings_handler(
     State(state): State<ProviderState>,
     headers: HeaderMap,
@@ -268,6 +240,97 @@ async fn serve_openai_provider_fixture() -> (String, Arc<Mutex<Vec<ProviderCall>
         axum::serve(listener, app).await.unwrap();
     });
     (format!("http://{addr}"), calls)
+}
+
+async fn serve_privatemode_provider_fixture() -> (String, Arc<Mutex<Vec<ProviderCall>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/v1/chat/completions", post(privatemode_chat_handler))
+        .route("/v1/models", get(privatemode_models_handler))
+        .with_state(ProviderState {
+            calls: calls.clone(),
+        });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), calls)
+}
+
+async fn redirect_sink(State(hits): State<Arc<AtomicUsize>>) -> impl IntoResponse {
+    hits.fetch_add(1, Ordering::SeqCst);
+    StatusCode::NO_CONTENT
+}
+
+async fn cross_origin_redirect(State(location): State<String>) -> impl IntoResponse {
+    (StatusCode::TEMPORARY_REDIRECT, [("location", location)])
+}
+
+async fn serve_cross_origin_privatemode_redirect_fixture() -> (String, Arc<AtomicUsize>) {
+    let sink_hits = Arc::new(AtomicUsize::new(0));
+    let sink = Router::new()
+        .route("/credential-sink", any(redirect_sink))
+        .with_state(sink_hits.clone());
+    let sink_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let sink_addr = sink_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(sink_listener, sink).await.unwrap();
+    });
+
+    let redirect = Router::new()
+        .route("/v1/models", get(cross_origin_redirect))
+        .route("/v1/chat/completions", post(cross_origin_redirect))
+        .with_state(format!("http://{sink_addr}/credential-sink"));
+    let redirect_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let redirect_addr = redirect_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(redirect_listener, redirect).await.unwrap();
+    });
+
+    (format!("http://{redirect_addr}"), sink_hits)
+}
+
+async fn oversized_models_with_content_length() -> axum::response::Response {
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        vec![b' '; 1024 * 1024 + 1],
+    )
+        .into_response()
+}
+
+async fn oversized_chunked_models() -> axum::response::Response {
+    let chunks = futures_util::stream::iter([
+        Ok::<_, Infallible>(Bytes::from(vec![b' '; 768 * 1024])),
+        Ok::<_, Infallible>(Bytes::from(vec![b' '; 768 * 1024])),
+    ]);
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .body(Body::from_stream(chunks))
+        .unwrap()
+}
+
+async fn indefinitely_trickled_models() -> axum::response::Response {
+    let chunks = futures_util::stream::unfold((), |()| async {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        Some((Ok::<_, Infallible>(Bytes::from_static(b" ")), ()))
+    });
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .body(Body::from_stream(chunks))
+        .unwrap()
+}
+
+async fn serve_models_fixture(app: Router) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
 }
 
 #[derive(Clone)]
@@ -513,6 +576,7 @@ fn runtime_options(mode: UpstreamVerifierMode) -> UpstreamRuntimeOptions {
         connect_timeout_seconds: 10,
         read_timeout_seconds: 600,
         verifier_request_timeout_seconds: 60,
+        privatemode_proxy: None,
     }
 }
 
@@ -721,10 +785,6 @@ async fn openai_compatible_provider_e2e_via_runtime_config() {
             chutes_chute_ids: None,
             chutes_e2ee_discovery_rounds: None,
             chutes_e2ee_discovery_interval_seconds: None,
-            privatemode_manifest_path: None,
-            privatemode_manifest_sha256: None,
-            privatemode_proxy_binary_path: None,
-            privatemode_proxy_binary_sha256: None,
         }])
         .unwrap();
     let service = service_for_manager(manager);
@@ -781,6 +841,7 @@ async fn openai_compatible_provider_e2e_via_runtime_config() {
 
 #[tokio::test]
 async fn privatemode_backend_forwards_buffered_and_streaming_only_with_its_binding() {
+    let (base_url, provider_calls) = serve_privatemode_provider_fixture().await;
     let policy_hash = "11".repeat(32);
     let manifest = serde_json::to_vec(&json!({
         "Policies": {
@@ -794,60 +855,79 @@ async fn privatemode_backend_forwards_buffered_and_streaming_only_with_its_bindi
     .unwrap();
     let manifest_path = temp_config_path();
     std::fs::write(&manifest_path, &manifest).unwrap();
-    let binary_path = temp_config_path().with_extension("py");
-    std::fs::write(&binary_path, FAKE_PRIVATEMODE_PROXY).unwrap();
     let manifest_digest = sha256_hex(&manifest)
         .strip_prefix("sha256:")
         .unwrap()
         .to_string();
-    let binary_digest = sha256_hex(FAKE_PRIVATEMODE_PROXY)
-        .strip_prefix("sha256:")
-        .unwrap()
-        .to_string();
-    let supervisor = Arc::new(
-        PrivatemodeProxySupervisor::new(
-            &binary_path,
-            &binary_digest,
+    let image_digest = format!("sha256:{}", "33".repeat(32));
+    let deployment = Arc::new(
+        PrivatemodeProxyDeployment::new(
+            &base_url,
             &manifest_path,
             &manifest_digest,
-            "provider-secret",
-            2,
-            10,
-            10,
+            sha256_hex(b"provider-secret"),
+            &image_digest,
         )
         .unwrap(),
     );
-    // Launch must use the already-verified sealed copies, not reopen mutable
-    // source paths after their digest check.
-    std::fs::write(&manifest_path, b"tampered after supervisor construction").unwrap();
-    std::fs::write(&binary_path, b"tampered after supervisor construction").unwrap();
-    let backend = PrivatemodeProviderBackend::new_with_timeouts(supervisor.clone(), 2, 10)
+    let failed_deployment = Arc::new(
+        PrivatemodeProxyDeployment::new(
+            &base_url,
+            &manifest_path,
+            &manifest_digest,
+            sha256_hex(b"wrong-secret"),
+            &image_digest,
+        )
+        .unwrap(),
+    );
+    // Receipt evidence retains the verified startup bytes even if the mounted
+    // path changes after deployment policy construction.
+    std::fs::write(&manifest_path, b"tampered after deployment construction").unwrap();
+    let backend =
+        PrivatemodeProviderBackend::new_with_timeouts(deployment.clone(), "provider-secret", 2, 10)
+            .unwrap()
+            .with_name("privatemode-provider");
+    let failed_event = PrivatemodeProviderVerifier::new(failed_deployment, "wrong-secret", 2, 10)
         .unwrap()
-        .with_name("privatemode-provider");
-    let verifier = PrivatemodeProviderVerifier::new(supervisor.clone());
+        .verify(UpstreamVerificationRequest {
+            upstream_name: "privatemode-provider".to_string(),
+            url_origin: Some(base_url.clone()),
+            model_id: "provider-model".to_string(),
+            forwarded_body_hash: sha256_hex(PROVIDER_CHAT_REQUEST),
+            required: true,
+        })
+        .await;
+    assert_eq!(failed_event.result.as_str(), "failed");
+    assert!(failed_event.channel_bindings.is_empty());
+    assert_eq!(
+        failed_event.reason.as_deref(),
+        Some(
+            "upstream transport error: Privatemode proxy attestation probe returned 401 Unauthorized"
+        )
+    );
+    let verifier =
+        PrivatemodeProviderVerifier::new(deployment.clone(), "provider-secret", 2, 10).unwrap();
     let event = verifier
         .verify(UpstreamVerificationRequest {
             upstream_name: "privatemode-provider".to_string(),
-            url_origin: Some("supervised://privatemode-proxy".to_string()),
+            url_origin: Some(base_url.clone()),
             model_id: "provider-model".to_string(),
             forwarded_body_hash: sha256_hex(PROVIDER_CHAT_REQUEST),
             required: true,
         })
         .await;
     assert_eq!(event.result.as_str(), "verified");
-    assert_eq!(event.url_origin.as_deref(), Some(supervisor.base_url()));
+    assert_eq!(event.url_origin.as_deref(), Some(base_url.as_str()));
     assert!(matches!(
         event.channel_bindings.as_slice(),
-        [ChannelBinding::ManifestSha256 {
+        [ChannelBinding::ManifestImageSha256 {
             manifest_sha256,
             coordinator_policy_hash,
-            proxy_binary_sha256,
-            proxy_tls_certificate_sha256,
+            proxy_image_digest,
             ..
         }] if manifest_sha256 == &manifest_digest
             && coordinator_policy_hash == &policy_hash
-            && proxy_binary_sha256 == &binary_digest
-            && proxy_tls_certificate_sha256 == supervisor.tls_certificate_sha256()
+            && proxy_image_digest == &image_digest
     ));
 
     let request = || UpstreamRequest {
@@ -861,18 +941,11 @@ async fn privatemode_backend_forwards_buffered_and_streaming_only_with_its_bindi
     assert_eq!(response.status_code, 200);
     assert_eq!(response.body, CHAT_RESPONSE);
 
-    // The fake exits after its first inference. The next verified forward must
-    // start a fresh exact generation, complete readiness again, and still match
-    // the same content-addressed binding.
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     let response = backend
         .forward_stream_verified_prepared(backend.prepare(request()).unwrap(), &event)
         .await
         .unwrap();
     assert_eq!(response.status_code, 200);
-    drop(backend);
-    drop(verifier);
-    drop(supervisor);
     let streamed = response
         .body
         .map(|chunk| chunk.unwrap())
@@ -881,12 +954,208 @@ async fn privatemode_backend_forwards_buffered_and_streaming_only_with_its_bindi
         .concat();
     assert_eq!(streamed, CHAT_RESPONSE);
 
+    let calls = provider_calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert!(calls
+        .iter()
+        .all(|call| call.authorization.as_deref() == Some("Bearer provider-secret")));
+
     let _ = std::fs::remove_file(manifest_path);
-    let _ = std::fs::remove_file(binary_path);
 }
 
 #[tokio::test]
-async fn privatemode_runtime_config_seals_the_supervised_generation_in_the_receipt() {
+async fn privatemode_never_follows_cross_origin_redirects() {
+    let (base_url, sink_hits) = serve_cross_origin_privatemode_redirect_fixture().await;
+    let policy_hash = "55".repeat(32);
+    let manifest = serde_json::to_vec(&json!({
+        "Policies": {
+            (&policy_hash): {"Role": "coordinator"}
+        }
+    }))
+    .unwrap();
+    let manifest_path = temp_config_path();
+    std::fs::write(&manifest_path, &manifest).unwrap();
+    let manifest_digest = sha256_hex(&manifest)
+        .strip_prefix("sha256:")
+        .unwrap()
+        .to_string();
+    let image_digest = format!("sha256:{}", "66".repeat(32));
+    let deployment = Arc::new(
+        PrivatemodeProxyDeployment::new(
+            &base_url,
+            &manifest_path,
+            &manifest_digest,
+            sha256_hex(b"credential-must-not-leak"),
+            &image_digest,
+        )
+        .unwrap(),
+    );
+    let verifier =
+        PrivatemodeProviderVerifier::new(deployment.clone(), "credential-must-not-leak", 2, 10)
+            .unwrap();
+    let readiness = verifier
+        .verify(UpstreamVerificationRequest {
+            upstream_name: "privatemode-provider".to_string(),
+            url_origin: Some(base_url.clone()),
+            model_id: "provider-model".to_string(),
+            forwarded_body_hash: sha256_hex(PROVIDER_CHAT_REQUEST),
+            required: true,
+        })
+        .await;
+    assert_eq!(readiness.result, VerificationResult::Failed);
+    assert_eq!(sink_hits.load(Ordering::SeqCst), 0);
+
+    let verified = UpstreamVerifiedEvent {
+        upstream_name: "privatemode-provider".to_string(),
+        provider_type: Some("privatemode".to_string()),
+        model_id: "provider-model".to_string(),
+        url_origin: Some(base_url.clone()),
+        verifier_id: "privatemode-proxy/co-deployed-contrast/v1".to_string(),
+        result: VerificationResult::Verified,
+        required: true,
+        channel_bindings: vec![ChannelBinding::ManifestImageSha256 {
+            provider: "privatemode".to_string(),
+            manifest_sha256: manifest_digest,
+            coordinator_policy_hash: policy_hash,
+            proxy_image_digest: image_digest,
+        }],
+        ..Default::default()
+    };
+    let backend = PrivatemodeProviderBackend::new_with_timeouts(
+        deployment,
+        "credential-must-not-leak",
+        2,
+        10,
+    )
+    .unwrap()
+    .with_name("privatemode-provider");
+    let request = || UpstreamRequest {
+        body: PROVIDER_CHAT_REQUEST.to_vec(),
+        ..Default::default()
+    };
+
+    let buffered = backend
+        .forward_verified_prepared(backend.prepare(request()).unwrap(), &verified)
+        .await
+        .unwrap();
+    assert_eq!(buffered.status_code, 307);
+    assert_eq!(sink_hits.load(Ordering::SeqCst), 0);
+
+    let streaming = backend
+        .forward_stream_verified_prepared(backend.prepare(request()).unwrap(), &verified)
+        .await
+        .unwrap();
+    assert_eq!(streaming.status_code, 307);
+    let _ = streaming
+        .body
+        .map(|chunk| chunk.unwrap())
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(sink_hits.load(Ordering::SeqCst), 0);
+
+    let _ = std::fs::remove_file(manifest_path);
+}
+
+#[tokio::test]
+async fn privatemode_readiness_rejects_declared_and_chunked_oversized_bodies() {
+    let declared = serve_models_fixture(
+        Router::new().route("/v1/models", get(oversized_models_with_content_length)),
+    )
+    .await;
+    let chunked =
+        serve_models_fixture(Router::new().route("/v1/models", get(oversized_chunked_models)))
+            .await;
+    let policy_hash = "77".repeat(32);
+    let manifest = serde_json::to_vec(&json!({
+        "Policies": {
+            (&policy_hash): {"Role": "coordinator"}
+        }
+    }))
+    .unwrap();
+    let manifest_path = temp_config_path();
+    std::fs::write(&manifest_path, &manifest).unwrap();
+    let manifest_digest = sha256_hex(&manifest);
+
+    for base_url in [declared, chunked] {
+        let deployment = Arc::new(
+            PrivatemodeProxyDeployment::new(
+                &base_url,
+                &manifest_path,
+                &manifest_digest,
+                sha256_hex(b"provider-secret"),
+                format!("sha256:{}", "88".repeat(32)),
+            )
+            .unwrap(),
+        );
+        let event = PrivatemodeProviderVerifier::new(deployment, "provider-secret", 2, 10)
+            .unwrap()
+            .verify(UpstreamVerificationRequest {
+                upstream_name: "privatemode-provider".to_string(),
+                url_origin: Some(base_url),
+                model_id: "provider-model".to_string(),
+                forwarded_body_hash: sha256_hex(PROVIDER_CHAT_REQUEST),
+                required: true,
+            })
+            .await;
+        assert_eq!(event.result, VerificationResult::Failed);
+        assert!(
+            event
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("exceeds 1048576 bytes")),
+            "unexpected readiness failure: {:?}",
+            event.reason
+        );
+    }
+
+    let _ = std::fs::remove_file(manifest_path);
+}
+
+#[tokio::test]
+async fn privatemode_readiness_has_an_end_to_end_deadline() {
+    let base_url =
+        serve_models_fixture(Router::new().route("/v1/models", get(indefinitely_trickled_models)))
+            .await;
+    let policy_hash = "99".repeat(32);
+    let manifest = serde_json::to_vec(&json!({
+        "Policies": {
+            (&policy_hash): {"Role": "coordinator"}
+        }
+    }))
+    .unwrap();
+    let manifest_path = temp_config_path();
+    std::fs::write(&manifest_path, &manifest).unwrap();
+    let deployment = Arc::new(
+        PrivatemodeProxyDeployment::new(
+            &base_url,
+            &manifest_path,
+            sha256_hex(&manifest),
+            sha256_hex(b"provider-secret"),
+            format!("sha256:{}", "aa".repeat(32)),
+        )
+        .unwrap(),
+    );
+    let verifier = PrivatemodeProviderVerifier::new(deployment, "provider-secret", 1, 1).unwrap();
+    let event = tokio::time::timeout(
+        Duration::from_secs(3),
+        verifier.verify(UpstreamVerificationRequest {
+            upstream_name: "privatemode-provider".to_string(),
+            url_origin: Some(base_url),
+            model_id: "provider-model".to_string(),
+            forwarded_body_hash: sha256_hex(PROVIDER_CHAT_REQUEST),
+            required: true,
+        }),
+    )
+    .await
+    .expect("readiness request must honor its total deadline");
+    assert_eq!(event.result, VerificationResult::Failed);
+
+    let _ = std::fs::remove_file(manifest_path);
+}
+
+#[tokio::test]
+async fn privatemode_runtime_config_binds_the_measured_sidecar_in_the_receipt() {
+    let (base_url, _provider_calls) = serve_privatemode_provider_fixture().await;
     let policy_hash = "22".repeat(32);
     let manifest = serde_json::to_vec(&json!({
         "Policies": {
@@ -899,28 +1168,32 @@ async fn privatemode_runtime_config_seals_the_supervised_generation_in_the_recei
     }))
     .unwrap();
     let manifest_path = temp_config_path();
-    let binary_path = temp_config_path().with_extension("py");
     std::fs::write(&manifest_path, &manifest).unwrap();
-    std::fs::write(&binary_path, FAKE_PRIVATEMODE_PROXY).unwrap();
     let manifest_digest = sha256_hex(&manifest)
         .strip_prefix("sha256:")
         .unwrap()
         .to_string();
-    let binary_digest = sha256_hex(FAKE_PRIVATEMODE_PROXY)
-        .strip_prefix("sha256:")
-        .unwrap()
-        .to_string();
+    let image_digest = format!("sha256:{}", "44".repeat(32));
+    let deployment = Arc::new(
+        PrivatemodeProxyDeployment::new(
+            &base_url,
+            &manifest_path,
+            &manifest_digest,
+            sha256_hex(b"provider-secret"),
+            &image_digest,
+        )
+        .unwrap(),
+    );
 
     let config_path = temp_config_path();
-    let manager = Arc::new(
-        UpstreamConfigManager::load(&config_path, runtime_options(UpstreamVerifierMode::None))
-            .unwrap(),
-    );
+    let mut options = runtime_options(UpstreamVerifierMode::None);
+    options.privatemode_proxy = Some(deployment);
+    let manager = Arc::new(UpstreamConfigManager::load(&config_path, options).unwrap());
     manager
         .replace(vec![UpstreamConfig {
             name: "privatemode-provider".to_string(),
             provider: UpstreamProvider::Privatemode,
-            base_url: "supervised://privatemode-proxy".to_string(),
+            base_url: base_url.clone(),
             path: None,
             models: BTreeMap::from([("public-model".to_string(), "provider-model".to_string())]),
             bearer_token: Some("provider-secret".to_string()),
@@ -938,10 +1211,6 @@ async fn privatemode_runtime_config_seals_the_supervised_generation_in_the_recei
             chutes_chute_ids: None,
             chutes_e2ee_discovery_rounds: None,
             chutes_e2ee_discovery_interval_seconds: None,
-            privatemode_manifest_path: Some(manifest_path.display().to_string()),
-            privatemode_manifest_sha256: Some(manifest_digest.clone()),
-            privatemode_proxy_binary_path: Some(binary_path.display().to_string()),
-            privatemode_proxy_binary_sha256: Some(binary_digest.clone()),
         }])
         .unwrap();
     let service = service_for_manager(manager);
@@ -960,35 +1229,24 @@ async fn privatemode_runtime_config_seals_the_supervised_generation_in_the_recei
     assert_eq!(event["provider_type"], "privatemode");
     assert_eq!(
         event["verifier_id"],
-        "privatemode-proxy/supervised-contrast/v1"
+        "privatemode-proxy/co-deployed-contrast/v1"
     );
     assert_eq!(
         event["channel_bindings"][0]["manifest_sha256"],
         manifest_digest
     );
     assert_eq!(
-        event["channel_bindings"][0]["proxy_binary_sha256"],
-        binary_digest
+        event["channel_bindings"][0]["proxy_image_digest"],
+        image_digest
     );
     assert_eq!(
         event["channel_bindings"][0]["coordinator_policy_hash"],
         policy_hash
     );
-    assert_eq!(
-        event["channel_bindings"][0]["proxy_tls_certificate_sha256"]
-            .as_str()
-            .unwrap()
-            .len(),
-        64
-    );
-    assert!(event["url_origin"]
-        .as_str()
-        .unwrap()
-        .starts_with("https://127.0.0.1:"));
+    assert_eq!(event["url_origin"], base_url);
 
     let _ = std::fs::remove_file(config_path);
     let _ = std::fs::remove_file(manifest_path);
-    let _ = std::fs::remove_file(binary_path);
 }
 
 #[tokio::test]
@@ -1027,10 +1285,6 @@ async fn openai_compatible_provider_routes_embeddings_via_runtime_config() {
             chutes_chute_ids: None,
             chutes_e2ee_discovery_rounds: None,
             chutes_e2ee_discovery_interval_seconds: None,
-            privatemode_manifest_path: None,
-            privatemode_manifest_sha256: None,
-            privatemode_proxy_binary_path: None,
-            privatemode_proxy_binary_sha256: None,
         }])
         .unwrap();
     let service = service_for_manager(manager);
@@ -1115,10 +1369,6 @@ async fn dynamic_runtime_config_delegates_verified_forwarding_to_selected_backen
             chutes_chute_ids: None,
             chutes_e2ee_discovery_rounds: None,
             chutes_e2ee_discovery_interval_seconds: None,
-            privatemode_manifest_path: None,
-            privatemode_manifest_sha256: None,
-            privatemode_proxy_binary_path: None,
-            privatemode_proxy_binary_sha256: None,
         }])
         .unwrap();
     let backend = manager.backend();

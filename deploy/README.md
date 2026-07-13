@@ -4,6 +4,13 @@ This directory contains the one-file dstack compose path for launching
 Private AI Gateway through
 [`git-launcher`](https://github.com/Dstack-TEE/dstack-examples/tree/main/git-launcher).
 
+Two complete deployment files are provided:
+
+| File | Services |
+| --- | --- |
+| `compose.yaml` | Gateway only. |
+| `compose.privatemode.yaml` | Gateway plus the official digest-pinned Privatemode proxy in the same measured workload. |
+
 The launcher fetches a pinned `private-ai-gateway` commit, verifies `HEAD`,
 scrubs the checkout, preserves the container environment, and runs the gateway
 repo's own [`../entrypoint.sh`](../entrypoint.sh). The launcher remains
@@ -34,6 +41,30 @@ PRIVATE_AI_GATEWAY_REPO_COMMIT=<full-40-hex-sha> \
 PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<long-random-admin-token> \
 phala-h4xuser deploy -n private-ai-gateway -c compose.yaml
 ```
+
+For Privatemode, use the co-deployed variant. It requires a reviewed manifest
+file and its digest; [`privatemode.env.example`](./privatemode.env.example)
+lists all inputs.
+
+```bash
+PRIVATE_AI_GATEWAY_REPO_COMMIT=<full-40-hex-sha> \
+PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<long-random-admin-token> \
+PRIVATEMODE_MANIFEST_PATH=/absolute/path/to/manifest.json \
+PRIVATEMODE_MANIFEST_SHA256=<64-hex-digest> \
+PRIVATEMODE_CREDENTIAL_SHA256=<sha256-of-privatemode-api-key> \
+phala-h4xuser deploy -n private-ai-gateway -c compose.privatemode.yaml
+```
+
+That compose pins
+`ghcr.io/edgelesssys/privatemode/privatemode-proxy` at OCI digest
+`sha256:ff900b263a51a437633d15da809e7893a31fa4b1f4acfa4e526c075682d84307`,
+mounts the same manifest into both services, and does not publish the proxy
+port. Add the mutable route and API key through the admin API after boot.
+The official proxy retains the first credential it receives, so rotating that
+route's API key requires removing the route, changing the measured
+`PRIVATEMODE_CREDENTIAL_SHA256`, redeploying the gateway and proxy together,
+and then adding the route with the new key. An admin config replacement or
+gateway-only restart is rejected.
 
 For local/dev deploys, you can also copy
 [`gateway.env.example`](./gateway.env.example), export those values from your
@@ -218,8 +249,8 @@ Example seed:
 ]
 ```
 
-Supported provider values are `openai-compatible`, `aci-service`, `tinfoil`,
-`near-ai`, `chutes`, and `phala-direct`.
+Supported provider values are `openai-compatible`, `anthropic`, `aci-service`,
+`tinfoil`, `near-ai`, `chutes`, `privatemode`, and `phala-direct`.
 
 For `aci-service`, `base_url` is the HTTPS origin used for both model traffic and
 `/v1/attestation/report`. The router fetches the report through normal TLS,

@@ -30,7 +30,6 @@ use crate::aci::receipt::UpstreamVerifiedEvent;
 mod chutes;
 mod openai;
 mod privatemode;
-mod privatemode_supervisor;
 mod router;
 mod tls;
 
@@ -38,8 +37,9 @@ pub use chutes::{
     ChutesProviderBackend, ChutesSessionStore, ChutesVerifiedDiscovery, ChutesVerifiedInstance,
 };
 pub use openai::OpenAICompatibleBackend;
-pub use privatemode::PrivatemodeProviderBackend;
-pub use privatemode_supervisor::{PrivatemodeProxySupervisor, PrivatemodeSupervisorConfigError};
+pub use privatemode::{
+    PrivatemodeDeploymentConfigError, PrivatemodeProviderBackend, PrivatemodeProxyDeployment,
+};
 pub use router::{ModelRoute, ModelRouterBackend};
 
 use openai::request_model_id;

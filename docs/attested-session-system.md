@@ -211,10 +211,10 @@ mapping. A `failed` result asserts nothing.
   (a per-instance, request-bound model attestation on the receipt — see
   [roadmap.md](roadmap.md)).
 - ⁴ Privatemode delegates Contrast verification and E2EE-secret ownership to the
-  official proxy supervised inside the gateway's attested workload. The gateway
-  seals the exact proxy executable and manifest, performs the fresh child's
-  credential exchange over pinned loopback TLS, and enforces all of those
-  bindings. It does not independently receive the hardware quote, so the typed
+  official proxy co-deployed inside the gateway's measured dstack Compose. The
+  gateway pins the internal origin, manifest, Coordinator policy, and proxy OCI
+  image digest, then requires an authenticated model-list probe before it emits
+  that binding. It does not independently receive the hardware quote, so the typed
   claim is `VerifierDerived`; raw manifest facts remain in `claims.extra`.
 - ¹ `tcb_up_to_date` is an honest tri-state from the verifier's reported
   `tcb_status` (`HardwareProven`): `UpToDate` asserts, any other reported status

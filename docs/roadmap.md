@@ -60,7 +60,7 @@ one session per channel. The channel boundary a provider attests is a first-clas
 property, `UpstreamProvider::attestation_scope()` → `AttestationScope`: per E2EE
 instance (Chutes), per model TEE (Phala-direct), and per router gateway TD
 (NEAR AI), model router (Tinfoil), or manifest-bound encryption proxy
-(Privatemode's gateway-supervised proxy generation), where one channel fronts
+(Privatemode's measured co-deployed proxy), where one channel fronts
 many models. The
 scope is the single source of truth: it drives channel-keyed verification (the
 model is dropped from the verifier cache key for routers, so every model resolves

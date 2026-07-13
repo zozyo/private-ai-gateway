@@ -34,21 +34,6 @@ pub(super) fn pinned_spki_client(
         accepted_certificates,
         connect_timeout_seconds,
         read_timeout_seconds,
-        false,
-    )
-}
-
-pub(super) fn pinned_certificate_client_no_proxy(
-    accepted_certificate: String,
-    connect_timeout_seconds: u64,
-    read_timeout_seconds: u64,
-) -> Result<reqwest::Client, UpstreamError> {
-    pinned_client(
-        Vec::new(),
-        vec![accepted_certificate],
-        connect_timeout_seconds,
-        read_timeout_seconds,
-        true,
     )
 }
 
@@ -57,7 +42,6 @@ fn pinned_client(
     accepted_certificates: Vec<String>,
     connect_timeout_seconds: u64,
     read_timeout_seconds: u64,
-    no_proxy: bool,
 ) -> Result<reqwest::Client, UpstreamError> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -73,14 +57,10 @@ fn pinned_client(
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
-    let mut builder = reqwest::Client::builder()
+    reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(connect_timeout_seconds))
         .read_timeout(Duration::from_secs(read_timeout_seconds))
-        .use_preconfigured_tls(tls);
-    if no_proxy {
-        builder = builder.no_proxy();
-    }
-    builder
+        .use_preconfigured_tls(tls)
         .build()
         .map_err(|e| UpstreamError::Transport(e.to_string()))
 }

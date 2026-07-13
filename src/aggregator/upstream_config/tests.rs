@@ -1,4 +1,4 @@
-use super::builders::build_verifier;
+use super::builders::{build_state, build_verifier};
 use super::dynamic::{DynamicUpstreamVerifier, EmptyUpstreamBackend};
 use super::*;
 use crate::aci::receipt::{UpstreamVerifiedEvent, VerificationResult};
@@ -37,10 +37,6 @@ fn test_upstream_config(
         chutes_chute_ids: None,
         chutes_e2ee_discovery_rounds: None,
         chutes_e2ee_discovery_interval_seconds: None,
-        privatemode_manifest_path: None,
-        privatemode_manifest_sha256: None,
-        privatemode_proxy_binary_path: None,
-        privatemode_proxy_binary_sha256: None,
     }
 }
 
@@ -96,66 +92,210 @@ fn provider_attestation_scopes() {
 }
 
 #[test]
-fn parse_config_requires_a_supervised_pinned_privatemode_proxy() {
-    let digest = "aa".repeat(32);
-    let valid_text = format!(
-        r#"[{{
+fn parse_config_requires_privatemode_credentials_and_keeps_deployment_fields_static() {
+    let valid_text = r#"[{
           "name": "privatemode",
           "provider": "privatemode",
-          "base_url": "supervised://privatemode-proxy",
-          "models": {{"public-model": "provider-model"}},
-          "bearer_token": "secret",
-          "privatemode_proxy_binary_path": "/opt/privatemode-proxy",
-          "privatemode_proxy_binary_sha256": "{digest}",
-          "privatemode_manifest_path": "/run/privatemode/manifest.json",
-          "privatemode_manifest_sha256": "{digest}"
-        }}]"#
-    );
-    let valid = parse_config_text(&valid_text).expect("supervised pinned config should parse");
+          "base_url": "http://privatemode-proxy:8080",
+          "models": {"public-model": "provider-model"},
+          "bearer_token": "secret"
+        }]"#;
+    let valid = parse_config_text(valid_text).expect("Privatemode route should parse");
     assert_eq!(valid[0].provider, UpstreamProvider::Privatemode);
 
-    for (name, text, expected) in [
-        (
-            "external origin",
-            valid_text.replace("supervised://privatemode-proxy", "http://127.0.0.1:8080"),
-            "requires base_url",
-        ),
-        (
-            "missing token",
-            valid_text.replace(
-                r#"          "bearer_token": "secret",
-"#,
-                "",
-            ),
-            "requires bearer_token",
-        ),
-        (
-            "relative binary",
-            valid_text.replace("/opt/privatemode-proxy", "privatemode-proxy"),
-            "binary_path must be absolute",
-        ),
-        (
-            "bad binary digest",
-            valid_text.replacen(&digest, "not-a-digest", 1),
-            "binary_sha256 must be a 32-byte",
-        ),
-        (
-            "relative manifest",
-            valid_text.replace("/run/privatemode/manifest.json", "manifest.json"),
-            "manifest_path must be absolute",
-        ),
-        (
-            "bad manifest digest",
-            valid_text.replace(
-                &format!(r#""privatemode_manifest_sha256": "{digest}""#),
-                r#""privatemode_manifest_sha256": "not-a-digest""#,
-            ),
-            "manifest_sha256 must be a 32-byte",
-        ),
-    ] {
-        let err = parse_config_text(&text).expect_err(name);
-        assert!(err.to_string().contains(expected), "{name}: {err}");
-    }
+    let mut duplicate: serde_json::Value = serde_json::from_str(valid_text).unwrap();
+    let mut second = duplicate[0].clone();
+    second["name"] = serde_json::json!("privatemode-two");
+    duplicate.as_array_mut().unwrap().push(second);
+    let err = parse_config_text(&duplicate.to_string())
+        .expect_err("one sidecar cannot safely own multiple route credentials");
+    assert!(err
+        .to_string()
+        .contains("only one Privatemode upstream entry"));
+
+    let missing_token = valid_text.replace(r#""secret""#, "null");
+    let err = parse_config_text(&missing_token).expect_err("missing token");
+    assert!(err.to_string().contains("requires bearer_token"), "{err}");
+
+    let dynamic_manifest = valid_text.replace(
+        r#"          "bearer_token": "secret""#,
+        r#"          "bearer_token": "secret",
+          "privatemode_manifest_path": "/run/privatemode/manifest.json""#,
+    );
+    let err = parse_config_text(&dynamic_manifest)
+        .expect_err("deployment pins must not be accepted through the admin config");
+    assert!(err.to_string().contains("unknown field"), "{err}");
+}
+
+#[test]
+fn privatemode_route_must_match_the_static_proxy_deployment() {
+    let policy_hash = "11".repeat(32);
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "Policies": {
+            (&policy_hash): {"Role": "coordinator"}
+        }
+    }))
+    .unwrap();
+    let manifest_path = std::env::temp_dir().join(format!(
+        "private-ai-gateway-privatemode-policy-{}-{}.json",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::write(&manifest_path, &manifest).unwrap();
+    let deployment = Arc::new(
+        crate::aci::upstream::PrivatemodeProxyDeployment::new(
+            "http://privatemode-proxy:8080",
+            &manifest_path,
+            crate::aci::canonical::sha256_hex(&manifest),
+            crate::aci::canonical::sha256_hex(b"secret"),
+            format!("sha256:{}", "22".repeat(32)),
+        )
+        .unwrap(),
+    );
+    let _ = std::fs::remove_file(manifest_path);
+
+    let mut route = test_upstream_config(
+        "privatemode",
+        UpstreamProvider::Privatemode,
+        "public-model",
+        "provider-model",
+    );
+    route.base_url = deployment.base_url().to_string();
+    route.bearer_token = Some("secret".to_string());
+    let mut options = UpstreamRuntimeOptions {
+        verifier_mode: UpstreamVerifierMode::None,
+        accepted_workload_ids: Vec::new(),
+        accepted_image_digests: Vec::new(),
+        accepted_dstack_kms_root_public_keys: Vec::new(),
+        pccs_url: None,
+        verifier_cache_seconds: 300,
+        connect_timeout_seconds: 10,
+        read_timeout_seconds: 600,
+        verifier_request_timeout_seconds: 60,
+        privatemode_proxy: None,
+    };
+
+    let err = match build_state(&[route.clone()], &options) {
+        Ok(_) => panic!("Privatemode route without static deployment must fail"),
+        Err(err) => err,
+    };
+    assert!(err
+        .to_string()
+        .contains("requires static privatemode_proxy"));
+
+    options.privatemode_proxy = Some(deployment);
+    build_state(&[route.clone()], &options)
+        .expect("matching static Privatemode deployment should build");
+    route.base_url = "http://different-proxy:8080".to_string();
+    let err = match build_state(&[route], &options) {
+        Ok(_) => panic!("mutable route must not redirect the static proxy"),
+        Err(err) => err,
+    };
+    assert!(err
+        .to_string()
+        .contains("does not match static proxy endpoint"));
+}
+
+#[test]
+fn privatemode_credential_rotation_requires_a_sidecar_redeploy() {
+    let policy_hash = "33".repeat(32);
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "Policies": {
+            (&policy_hash): {"Role": "coordinator"}
+        }
+    }))
+    .unwrap();
+    let unique = format!("{}-{}", std::process::id(), rand::random::<u64>());
+    let manifest_path = std::env::temp_dir().join(format!(
+        "private-ai-gateway-privatemode-rotation-manifest-{unique}.json"
+    ));
+    let config_path = std::env::temp_dir().join(format!(
+        "private-ai-gateway-privatemode-rotation-config-{unique}.json"
+    ));
+    std::fs::write(&manifest_path, &manifest).unwrap();
+    let deployment = Arc::new(
+        crate::aci::upstream::PrivatemodeProxyDeployment::new(
+            "http://privatemode-proxy:8080",
+            &manifest_path,
+            crate::aci::canonical::sha256_hex(&manifest),
+            crate::aci::canonical::sha256_hex(b"first-credential"),
+            format!("sha256:{}", "44".repeat(32)),
+        )
+        .unwrap(),
+    );
+    let options = UpstreamRuntimeOptions {
+        verifier_mode: UpstreamVerifierMode::None,
+        accepted_workload_ids: Vec::new(),
+        accepted_image_digests: Vec::new(),
+        accepted_dstack_kms_root_public_keys: Vec::new(),
+        pccs_url: None,
+        verifier_cache_seconds: 300,
+        connect_timeout_seconds: 10,
+        read_timeout_seconds: 600,
+        verifier_request_timeout_seconds: 60,
+        privatemode_proxy: Some(deployment),
+    };
+    let manager = UpstreamConfigManager::load(&config_path, options.clone()).unwrap();
+    let mut route = test_upstream_config(
+        "privatemode",
+        UpstreamProvider::Privatemode,
+        "public-model",
+        "provider-model",
+    );
+    route.base_url = "http://privatemode-proxy:8080".to_string();
+    route.bearer_token = Some("first-credential".to_string());
+
+    manager.replace(vec![route.clone()]).unwrap();
+    manager.replace(Vec::new()).unwrap();
+
+    route.bearer_token = Some("different-credential".to_string());
+    let err = manager
+        .replace(vec![route.clone()])
+        .expect_err("removing a route must not unlock proxy credential rotation");
+    assert!(err.to_string().contains("credential_sha256"));
+    assert!(manager.snapshot().upstreams.is_empty());
+
+    route.bearer_token = Some("first-credential".to_string());
+    manager
+        .replace(vec![route])
+        .expect("the credential already owned by the proxy remains valid");
+
+    manager.replace(Vec::new()).unwrap();
+    drop(manager);
+    let restarted = UpstreamConfigManager::load(&config_path, options.clone()).unwrap();
+    let mut rotated = test_upstream_config(
+        "privatemode",
+        UpstreamProvider::Privatemode,
+        "public-model",
+        "provider-model",
+    );
+    rotated.base_url = "http://privatemode-proxy:8080".to_string();
+    rotated.bearer_token = Some("different-credential".to_string());
+    let err = restarted
+        .replace(vec![rotated.clone()])
+        .expect_err("gateway-only restart must retain measured credential policy");
+    assert!(err.to_string().contains("credential_sha256"));
+    drop(restarted);
+
+    let rotated_deployment = Arc::new(
+        crate::aci::upstream::PrivatemodeProxyDeployment::new(
+            "http://privatemode-proxy:8080",
+            &manifest_path,
+            crate::aci::canonical::sha256_hex(&manifest),
+            crate::aci::canonical::sha256_hex(b"different-credential"),
+            format!("sha256:{}", "44".repeat(32)),
+        )
+        .unwrap(),
+    );
+    let mut rotated_options = options;
+    rotated_options.privatemode_proxy = Some(rotated_deployment);
+    let coordinated = UpstreamConfigManager::load(&config_path, rotated_options).unwrap();
+    coordinated
+        .replace(vec![rotated])
+        .expect("a coordinated measured-policy change can accept a new credential");
+
+    let _ = std::fs::remove_file(config_path);
+    let _ = std::fs::remove_file(manifest_path);
 }
 
 #[async_trait]
@@ -268,6 +408,7 @@ fn global_aci_service_does_not_require_policy_for_plain_openai_compatible_upstre
         connect_timeout_seconds: 10,
         read_timeout_seconds: 600,
         verifier_request_timeout_seconds: 60,
+        privatemode_proxy: None,
     };
 
     let verifier = build_verifier(&config, &options, &ProviderSessionRegistry::default())
@@ -335,10 +476,6 @@ async fn prewarm_verification_deduplicates_upstream_models() {
         chutes_chute_ids: None,
         chutes_e2ee_discovery_rounds: None,
         chutes_e2ee_discovery_interval_seconds: None,
-        privatemode_manifest_path: None,
-        privatemode_manifest_sha256: None,
-        privatemode_proxy_binary_path: None,
-        privatemode_proxy_binary_sha256: None,
     }];
     let state = Arc::new(RwLock::new(Arc::new(ConfiguredUpstreams {
         config,
@@ -362,6 +499,7 @@ async fn prewarm_verification_deduplicates_upstream_models() {
             connect_timeout_seconds: 10,
             read_timeout_seconds: 600,
             verifier_request_timeout_seconds: 60,
+            privatemode_proxy: None,
         },
         state,
         session_sink: Arc::new(RwLock::new(None)),

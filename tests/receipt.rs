@@ -176,8 +176,14 @@ fn upstream_verified_event_records_channel_bindings() {
                 provider: "privatemode".to_string(),
                 manifest_sha256: "dd".repeat(32),
                 coordinator_policy_hash: "ee".repeat(32),
-                proxy_binary_sha256: "ff".repeat(32),
-                proxy_tls_certificate_sha256: "12".repeat(32),
+                proxy_binary_sha256: "12".repeat(32),
+                proxy_tls_certificate_sha256: "34".repeat(32),
+            },
+            ChannelBinding::ManifestImageSha256 {
+                provider: "privatemode".to_string(),
+                manifest_sha256: "dd".repeat(32),
+                coordinator_policy_hash: "ee".repeat(32),
+                proxy_image_digest: format!("sha256:{}", "ff".repeat(32)),
             },
         ],
         provider_claims: Some(serde_json::json!({
@@ -232,16 +238,39 @@ fn upstream_verified_event_records_channel_bindings() {
     );
     assert_eq!(
         upstream.fields["channel_bindings"][3]["proxy_binary_sha256"],
-        "ff".repeat(32)
+        "12".repeat(32)
     );
     assert_eq!(
         upstream.fields["channel_bindings"][3]["proxy_tls_certificate_sha256"],
-        "12".repeat(32)
+        "34".repeat(32)
+    );
+    assert_eq!(
+        upstream.fields["channel_bindings"][4]["type"],
+        "manifest_image_sha256"
+    );
+    assert_eq!(
+        upstream.fields["channel_bindings"][4]["proxy_image_digest"],
+        format!("sha256:{}", "ff".repeat(32))
     );
     assert_eq!(
         upstream.fields["provider_claims"]["trust_boundary"],
         "fixture"
     );
+}
+
+#[test]
+fn legacy_manifest_binding_remains_deserializable_under_aci_v1() {
+    let binding: ChannelBinding = serde_json::from_value(serde_json::json!({
+        "type": "manifest_sha256",
+        "provider": "privatemode",
+        "manifest_sha256": "11".repeat(32),
+        "coordinator_policy_hash": "22".repeat(32),
+        "proxy_binary_sha256": "33".repeat(32),
+        "proxy_tls_certificate_sha256": "44".repeat(32)
+    }))
+    .unwrap();
+
+    assert!(matches!(binding, ChannelBinding::ManifestSha256 { .. }));
 }
 
 #[test]
