@@ -48,6 +48,8 @@ services:
       - /var/lib/privatemode
       - --port
       - "8080"
+      - --apiKey
+      - "@/run/secrets/privatemode-api-key"
       - --nvidiaOCSPAllowUnknown=false
       - --nvidiaOCSPRevokedGracePeriod=0
     configs:
@@ -55,6 +57,9 @@ services:
         target: /run/privatemode/manifest.json
     tmpfs:
       - /var/lib/privatemode:mode=0700
+    secrets:
+      - source: privatemode-api-key
+        target: privatemode-api-key
     restart: unless-stopped
 
 configs:
@@ -91,3 +96,7 @@ configs:
 volumes:
   gateway-checkout:
   gateway-state:
+
+secrets:
+  privatemode-api-key:
+    environment: PRIVATEMODE_API_KEY

@@ -76,22 +76,25 @@ and set the reviewed manifest file and digest before deployment:
 export PRIVATE_AI_GATEWAY_REPO_COMMIT=<audited-commit>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<admin-token>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256="$(printf %s "$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)"
+export PRIVATEMODE_API_KEY=<privatemode-api-key>
 export PRIVATEMODE_MANIFEST_JSON="$(jq -c . /absolute/path/to/manifest.json)"
 export PRIVATEMODE_MANIFEST_SHA256="$(printf %s "$PRIVATEMODE_MANIFEST_JSON" | sha256sum | cut -d' ' -f1)"
-export PRIVATEMODE_CREDENTIAL_SHA256=<sha256-of-privatemode-api-key>
+export PRIVATEMODE_CREDENTIAL_SHA256="$(printf %s "$PRIVATEMODE_API_KEY" | sha256sum | cut -d' ' -f1)"
 
 env -u PRIVATE_AI_GATEWAY_ADMIN_TOKEN \
   docker compose -f deploy/compose.privatemode.yaml config \
   -o /tmp/private-ai-gateway-privatemode.yaml
 phala-h4xuser deploy -n private-ai-gateway \
   -c /tmp/private-ai-gateway-privatemode.yaml \
-  -e PRIVATE_AI_GATEWAY_ADMIN_TOKEN="$PRIVATE_AI_GATEWAY_ADMIN_TOKEN"
+  -e PRIVATE_AI_GATEWAY_ADMIN_TOKEN="$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" \
+  -e PRIVATEMODE_API_KEY="$PRIVATEMODE_API_KEY"
 ```
 
 Rendering makes the manifest and non-secret pins part of the measured Compose.
-The admin token remains outside it and enters only through the encrypted
-deployment environment; its measured SHA-256 policy prevents an untrusted host
-from substituting a credential it knows.
+Both secrets remain outside it and enter only through the encrypted deployment
+environment. Compose mounts the Privatemode key as a secret file for the
+official proxy's `--apiKey @<file>` interface. Their measured SHA-256 policies
+prevent an untrusted host from substituting credentials it knows.
 
 The measured static gateway config has this shape:
 
@@ -124,13 +127,14 @@ Configure the mutable route, including its API credential, after boot:
 ```
 
 One co-deployed proxy supports one gateway upstream entry. Put all models that
-share its credential in that entry. The official proxy's secret manager keeps
-the first offered credential. The gateway accepts only a `bearer_token` matching
-the static measured `credential_sha256`, including after route removal or a
-gateway-only restart. To rotate the key, remove the route, change the measured
-credential digest, redeploy both the gateway and proxy, then add the route with
-the new credential. If distinct credentials are required, deploy distinct
-measured proxy services rather than pointing multiple entries at one service.
+share its credential in that entry. The official proxy loads one credential
+from its Compose secret file at startup. The gateway accepts only a
+`bearer_token` matching the static measured `credential_sha256`, including after
+route removal or a gateway-only restart. To rotate the key, remove the route,
+change the measured credential digest, redeploy both the gateway and proxy,
+then add the route with the new credential. If distinct credentials are
+required, deploy distinct measured proxy services rather than pointing multiple
+entries at one service.
 
 ## Session binding
 

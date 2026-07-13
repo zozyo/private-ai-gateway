@@ -192,8 +192,8 @@ manifest pin at startup and refuses a mutable route whose `base_url` differs
 from the static internal origin. An authenticated model-list probe must succeed
 before the verifier emits the manifest/image binding. Configure at most one
 `privatemode` entry per proxy; place every model using that credential in the
-entry's `models` map. The official proxy retains the first credential offered
-to its secret manager. The static `credential_sha256` makes that choice
+entry's `models` map. The official proxy loads that credential from a
+Compose-managed secret file at startup. The static `credential_sha256` makes it
 immutable across route removal and gateway-only restarts. Separate credentials
 require separate measured proxy deployments rather than extra entries pointing
 to one service.

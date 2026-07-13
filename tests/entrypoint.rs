@@ -46,11 +46,16 @@ fn privatemode_proxy_is_a_pinned_unpublished_compose_service() {
         "proxy port must not be published"
     );
     assert!(service.contains("--manifestPath"));
+    assert!(service.contains("--apiKey"));
+    assert!(service.contains("@/run/secrets/privatemode-api-key"));
     assert!(service.contains("--nvidiaOCSPAllowUnknown=false"));
     assert!(service.contains("--nvidiaOCSPRevokedGracePeriod=0"));
     assert!(service.contains("source: privatemode-manifest"));
     assert!(service.contains("tmpfs:"));
+    assert!(service.contains("source: privatemode-api-key"));
     assert!(!service.contains("privatemode-state"));
+    assert!(body.contains("environment: PRIVATEMODE_API_KEY"));
+    assert!(!body.contains("--apiKey=${PRIVATEMODE_API_KEY}"));
 }
 
 #[test]

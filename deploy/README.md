@@ -50,23 +50,27 @@ lists all inputs.
 export PRIVATE_AI_GATEWAY_REPO_COMMIT=<full-40-hex-sha>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN=<long-random-admin-token>
 export PRIVATE_AI_GATEWAY_ADMIN_TOKEN_SHA256="$(printf %s "$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)"
+export PRIVATEMODE_API_KEY=<privatemode-api-key>
 export PRIVATEMODE_MANIFEST_JSON="$(jq -c . /absolute/path/to/manifest.json)"
 export PRIVATEMODE_MANIFEST_SHA256="$(printf %s "$PRIVATEMODE_MANIFEST_JSON" | sha256sum | cut -d' ' -f1)"
-export PRIVATEMODE_CREDENTIAL_SHA256=<sha256-of-privatemode-api-key>
+export PRIVATEMODE_CREDENTIAL_SHA256="$(printf %s "$PRIVATEMODE_API_KEY" | sha256sum | cut -d' ' -f1)"
 
 env -u PRIVATE_AI_GATEWAY_ADMIN_TOKEN \
   docker compose -f compose.privatemode.yaml config \
   -o /tmp/private-ai-gateway-privatemode.yaml
 phala-h4xuser deploy -n private-ai-gateway \
   -c /tmp/private-ai-gateway-privatemode.yaml \
-  -e PRIVATE_AI_GATEWAY_ADMIN_TOKEN="$PRIVATE_AI_GATEWAY_ADMIN_TOKEN"
+  -e PRIVATE_AI_GATEWAY_ADMIN_TOKEN="$PRIVATE_AI_GATEWAY_ADMIN_TOKEN" \
+  -e PRIVATEMODE_API_KEY="$PRIVATEMODE_API_KEY"
 ```
 
 Render before deployment so the exact compact manifest, its digest, the
 credential digest, admin-token digest, image digest, and git commit are part of
 the measured Compose. The admin token itself is deliberately absent from the
 rendered file and is passed through Phala's encrypted environment instead. The
-gateway checks it against the measured digest before enabling the admin API.
+Privatemode API key follows the same path into a Compose-managed secret file;
+the proxy reads that file through its official `--apiKey @<file>` interface.
+The gateway checks both secrets against their measured digests before use.
 Those non-secret content pins are also service labels, ensuring Compose
 recreates both services when a mounted inline config changes instead of
 restarting a container with stale config bytes.
@@ -76,8 +80,8 @@ That compose pins
 `sha256:ff900b263a51a437633d15da809e7893a31fa4b1f4acfa4e526c075682d84307`,
 mounts the same manifest into both services, and does not publish the proxy
 port. Add the mutable route and API key through the admin API after boot.
-The official proxy retains the first credential it receives, so rotating that
-route's API key requires removing the route, changing the measured
+The official proxy loads one credential at startup, so rotating that route's
+API key requires removing the route, changing the measured
 `PRIVATEMODE_CREDENTIAL_SHA256`, redeploying the gateway and proxy together,
 and then adding the route with the new key. An admin config replacement or
 gateway-only restart is rejected.

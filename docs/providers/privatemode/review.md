@@ -29,7 +29,7 @@ Admission conditions:
 - Disable HTTP redirects for proxy readiness and forwarding requests.
 - Bind the accepted credential digest in measured static policy and require a
   coordinated gateway/proxy redeploy to change it, matching the proxy's
-  first-credential ownership semantics.
+  startup credential ownership semantics.
 - Expose only the gateway listener from the workload network. Version 1.48 of
   the official proxy has no listen-address flag and opens its configured port on
   the network namespace's wildcard address.
